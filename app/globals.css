@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;900&display=swap');
+
+:root { color-scheme: dark; --ink:#f7f5ff; --muted:#9e9aaf; --panel:#121018; --line:#292631; --pink:#ff3dab; --cyan:#2cecff; --yellow:#ffe04a; }
+* { box-sizing:border-box; }
+html { background:#08070b; }
+body { margin:0; color:var(--ink); font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at 8% 12%,#27102b 0,transparent 25%),radial-gradient(circle at 93% 30%,#07262d 0,transparent 24%),#08070b; min-height:100vh; }
+button,input { font:inherit; }
+button { cursor:pointer; }
+main { width:min(1180px,calc(100% - 40px)); margin:auto; padding:56px 0 30px; }
+.hero { display:flex; justify-content:space-between; align-items:end; padding-bottom:38px; border-bottom:1px solid var(--line); }
+.eyebrow,.section-kicker { font-family:"Chakra Petch",sans-serif; letter-spacing:.18em; font-size:12px; color:var(--cyan); margin:0 0 9px; font-weight:700; }
+.eyebrow span { display:inline-block; width:23px; height:2px; background:linear-gradient(90deg,var(--pink),var(--cyan)); margin:0 9px 3px 0; }
+h1 { margin:0; font-size:clamp(42px,7vw,78px); line-height:1; letter-spacing:-.06em; font-weight:900; }
+h1 span { color:transparent; -webkit-text-stroke:1.5px var(--pink); text-shadow:0 0 24px #ff3dab55; margin:0 8px; }
+.subtitle { color:var(--muted); margin:16px 0 0; }
+.reset-button { background:transparent; color:#c5c1cd; border:1px solid #3a3643; padding:12px 18px; border-radius:4px; }
+.reset-button:hover { border-color:var(--pink); color:#fff; }
+.stats { display:grid; grid-template-columns:repeat(3,1fr); background:#0e0d12; border-bottom:1px solid var(--line); }
+.stats div { padding:24px 8px; text-align:center; position:relative; }
+.stats div+div:before { content:""; position:absolute; left:0; top:25%; height:50%; width:1px; background:var(--line); }
+.stats b { font:700 32px "Chakra Petch"; display:block; }
+.stats div:first-child b { color:var(--cyan); }.stats div:nth-child(2) b{color:var(--pink)}.stats div:last-child b{color:var(--yellow)}
+.stats span { color:#7f7b88; font-size:12px; }
+.draw-panel { margin:42px 0 64px; padding:30px 34px; border:1px solid #302d37; background:linear-gradient(120deg,#15121a,#0d1115); display:flex; justify-content:space-between; align-items:center; position:relative; overflow:hidden; }
+.draw-panel:after { content:""; position:absolute; width:180px;height:180px;right:23%;border:28px solid #2cecff08;transform:rotate(30deg); }
+h2 { margin:0; font-size:25px; }.draw-panel p:last-child { color:#8f8998; font-size:13px; margin-bottom:0; }.draw-panel p.error{color:#ff7dbd}
+.draw-controls { display:flex; align-items:end; gap:12px; z-index:1; }
+label span { display:block; font-size:11px; color:#8f8998; margin:0 0 7px; }
+input { width:100px; padding:13px; color:#fff; background:#09080c; border:1px solid #393541; outline:none; }
+input:focus { border-color:var(--cyan); box-shadow:0 0 0 2px #2cecff22; }
+.draw-button,.use-button { border:0; color:#09070b; background:linear-gradient(100deg,var(--pink),#ff77ce); padding:14px 28px; font-weight:800; box-shadow:0 0 24px #ff3dab2e; }
+.draw-button span { padding-left:22px; }.draw-button:disabled { filter:grayscale(1); opacity:.4; cursor:not-allowed; box-shadow:none; }
+.section-heading { display:flex; align-items:end; justify-content:space-between; padding-bottom:18px; border-bottom:1px solid var(--line); margin-bottom:24px; }
+.section-heading p:last-child { color:#706c78; font-size:12px; }.section-heading em { font-style:normal; font:600 12px "Chakra Petch"; color:var(--pink); border:1px solid #ff3dab55; padding:3px 8px; border-radius:20px; vertical-align:middle; }
+.card-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:18px; }
+.game-card { min-height:365px; padding:20px; border:1px solid #39333f; border-radius:13px; background:linear-gradient(155deg,#1b1520,#0d0c11 60%); display:flex; flex-direction:column; position:relative; overflow:hidden; box-shadow:0 18px 45px #0008; }
+.game-card:before { content:""; position:absolute; inset:0; border-radius:13px; padding:1px; background:linear-gradient(135deg,var(--pink),transparent 32%,transparent 70%,var(--cyan)); -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite:xor; pointer-events:none; }
+.card-topline { display:flex; justify-content:space-between; font:600 10px "Chakra Petch"; letter-spacing:.12em; color:var(--pink); }
+.card-topline small { color:#686270; }.orb { width:84px;height:84px;border-radius:50%;margin:30px auto 24px;background:radial-gradient(circle at 35% 30%,#fff,var(--cyan) 7%,#122f41 23%,#07070b 65%);box-shadow:0 0 28px #2cecff52; }
+.game-card:nth-child(3n+2) .orb { background:radial-gradient(circle at 35% 30%,#fff,var(--pink) 7%,#41122d 23%,#07070b 65%);box-shadow:0 0 28px #ff3dab52; }
+.game-card:nth-child(3n) .orb { background:radial-gradient(circle at 35% 30%,#fff,var(--yellow) 7%,#3d3610 23%,#07070b 65%);box-shadow:0 0 28px #ffe04a44; }
+.game-card h3 { text-align:center; margin:0 0 14px; font-size:23px; }.game-card p { color:#aaa5b1; line-height:1.75; font-size:13px; margin:0 0 22px; flex:1; }
+.use-button { width:100%; padding:11px; background:transparent; color:#fff; border:1px solid #ff3dab66; box-shadow:none; }.use-button:hover { background:var(--pink); color:#08070b; }
+.is-used { opacity:.45; filter:saturate(.35); }.is-used .card-topline span { color:#aaa; }.is-fresh { animation:flip .65s ease both; }
+@keyframes flip { 0%{transform:perspective(800px) rotateY(90deg) scale(.92);opacity:0}100%{transform:none;opacity:1} }
+.used-section { margin-top:70px; }.empty { border:1px dashed #302c36; color:#716c79; text-align:center; padding:64px 20px; background:#0c0b0f88; }.empty.small{padding:36px}
+footer { color:#55515c; font-size:11px; text-align:center; padding:65px 0 10px; }
+.loading { display:grid; place-items:center; min-height:100vh; color:var(--cyan); letter-spacing:.2em; }
+@media (max-width:900px){.card-grid{grid-template-columns:repeat(2,1fr)}.draw-panel{align-items:flex-start;gap:25px;flex-direction:column}.draw-controls{width:100%}.draw-button{flex:1}}
+@media (max-width:560px){main{width:min(100% - 24px);padding-top:28px}.hero{align-items:flex-start;gap:28px;flex-direction:column}.reset-button{align-self:flex-end}.stats b{font-size:25px}.draw-panel{padding:24px 18px;margin-top:24px}.draw-controls{align-items:stretch;flex-direction:column}input{width:100%}.card-grid{grid-template-columns:1fr}.game-card{min-height:350px}.section-heading>p{display:none}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
