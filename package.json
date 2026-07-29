@@ -7,7 +7,9 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "dev:static": "vite --config vite.static.config.ts",
     "build": "vinext build",
+    "build:static": "vite build --config vite.static.config.ts",
     "start": "vinext start",
     "test": "vitest run --config vitest.config.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",

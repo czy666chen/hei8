@@ -38,6 +38,7 @@ yarn-error.log*
 # typescript
 next-env.d.ts
 /dist/
+/dist-static/
 /.wrangler/
 /outputs/
 /work/

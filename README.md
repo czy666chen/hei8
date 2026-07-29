@@ -18,8 +18,11 @@ npm run dev
 ```bash
 npm run test
 npm run build
+npm run build:static
 ```
 
-## 部署
+`npm run build` 生成 Cloudflare Worker 版本，`npm run build:static` 生成适用于 Vercel 等静态托管平台的 `dist-static`。
 
-构建产物可部署到兼容 Cloudflare Workers 的平台。项目已包含 Sites 托管配置，也可以通过 Codex Sites 直接发布。
+## Vercel 部署
+
+项目包含 `vercel.json`。在 Vercel 导入 Git 仓库，或在项目根目录运行 Vercel CLI，即可使用静态构建发布。
