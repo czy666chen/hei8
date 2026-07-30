@@ -2,18 +2,19 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://hei8chouka.vercel.app"),
   title: "台球奇招卡牌",
-  description: "51 张台球奇招卡牌，不放回随机抽取。",
+  description: "51 张台球奇招卡牌，支持一套或双人独立手牌，不放回随机抽取。",
   openGraph: {
     title: "台球奇招卡牌",
-    description: "51 张 · 不放回抽取",
+    description: "51 张 · 一套或双人手牌 · 不放回抽取",
     type: "website",
     images: [{ url: "/og.png", width: 1733, height: 907, alt: "台球奇招卡牌" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "台球奇招卡牌",
-    description: "51 张 · 不放回抽取",
+    description: "51 张 · 一套或双人手牌 · 不放回抽取",
     images: ["/og.png"],
   },
 };
