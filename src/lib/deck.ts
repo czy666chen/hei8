@@ -17,6 +17,7 @@ export interface GameSettings {
   sharedHandSize: number;
   playerAHandSize: number;
   playerBHandSize: number;
+  excludedDefinitionIds: string[];
 }
 
 export interface CardRecord {
@@ -26,8 +27,9 @@ export interface CardRecord {
 }
 
 export interface GameState {
-  version: 2;
+  version: 3;
   remaining: CardInstance[];
+  excluded: CardInstance[];
   hands: Record<HandId, CardInstance[]>;
   used: CardRecord[];
   discarded: CardRecord[];
@@ -40,6 +42,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   sharedHandSize: 3,
   playerAHandSize: 3,
   playerBHandSize: 3,
+  excludedDefinitionIds: [],
 };
 
 export const createDeck = (): CardInstance[] =>
@@ -91,15 +94,24 @@ function takeRandomCards(
 
 export function normalizeSettings(input: GameSettings): GameSettings {
   const handMode: HandMode = input.handMode === "dual" ? "dual" : "shared";
+  const validDefinitions = new Set(CARD_DEFINITIONS.map((item) => item.id));
+  const excludedDefinitionIds = Array.from(new Set(
+    Array.isArray(input.excludedDefinitionIds)
+      ? input.excludedDefinitionIds.filter((id) => typeof id === "string" && validDefinitions.has(id))
+      : [],
+  ));
+  const availableCount = CARD_DEFINITIONS
+    .filter((item) => !excludedDefinitionIds.includes(item.id))
+    .reduce((sum, item) => sum + item.count, 0);
   const clamp = (value: number) =>
-    Math.max(0, Math.min(51, Math.trunc(Number.isFinite(value) ? value : 0)));
+    Math.max(0, Math.min(availableCount, Math.trunc(Number.isFinite(value) ? value : 0)));
   const sharedHandSize = clamp(input.sharedHandSize);
   const playerAHandSize = clamp(input.playerAHandSize);
   let playerBHandSize = clamp(input.playerBHandSize);
-  if (playerAHandSize + playerBHandSize > 51) {
-    playerBHandSize = Math.max(0, 51 - playerAHandSize);
+  if (playerAHandSize + playerBHandSize > availableCount) {
+    playerBHandSize = Math.max(0, availableCount - playerAHandSize);
   }
-  return { handMode, sharedHandSize, playerAHandSize, playerBHandSize };
+  return { handMode, sharedHandSize, playerAHandSize, playerBHandSize, excludedDefinitionIds };
 }
 
 export function resetGame(
@@ -108,7 +120,9 @@ export function resetGame(
 ): GameState {
   const normalized = normalizeSettings(settings);
   const hands = emptyHands();
-  let remaining = createDeck();
+  const deck = createDeck();
+  const excluded = deck.filter((card) => normalized.excludedDefinitionIds.includes(card.definitionId));
+  let remaining = deck.filter((card) => !normalized.excludedDefinitionIds.includes(card.definitionId));
 
   if (normalized.handMode === "shared") {
     const dealt = takeRandomCards(remaining, normalized.sharedHandSize, randomIndex);
@@ -124,8 +138,9 @@ export function resetGame(
   }
 
   return {
-    version: 2,
+    version: 3,
     remaining,
+    excluded,
     hands,
     used: [],
     discarded: [],
@@ -175,7 +190,7 @@ export function playCard(
   };
 }
 
-export function skipUnsafeCard(
+export function skipCard(
   state: GameState,
   handId: HandId,
   instanceId: string,
@@ -183,7 +198,7 @@ export function skipUnsafeCard(
   now = Date.now(),
 ): GameState {
   const target = state.hands[handId].find((item) => item.instanceId === instanceId);
-  if (!target?.safetyNote) return state;
+  if (!target) return state;
   const base: GameState = {
     ...state,
     hands: {
@@ -196,6 +211,22 @@ export function skipUnsafeCard(
   return drawCards(base, handId, 1, randomIndex);
 }
 
+export function setExcludedDefinitions(state: GameState, definitionIds: string[]): GameState {
+  const validDefinitions = new Set(CARD_DEFINITIONS.map((item) => item.id));
+  const selected = Array.from(new Set(
+    definitionIds.filter((id) => validDefinitions.has(id)),
+  ));
+  const availablePool = [...state.remaining, ...state.excluded];
+  const excluded = availablePool.filter((card) => selected.includes(card.definitionId));
+  const remaining = availablePool.filter((card) => !selected.includes(card.definitionId));
+  return {
+    ...state,
+    remaining,
+    excluded,
+    settings: { ...state.settings, excludedDefinitionIds: selected },
+  };
+}
+
 export function handLabel(handId: HandId): string {
   if (handId === "playerA") return "玩家 A";
   if (handId === "playerB") return "玩家 B";
@@ -206,7 +237,8 @@ export function loadGameState(raw: string | null): GameState | null {
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
-    if (isGameStateV2(value)) return hydrateState(value);
+    if (isGameStateV3(value)) return hydrateState(value);
+    if (isGameStateV2(value)) return migrateV2State(value);
     if (isLegacyState(value)) return migrateLegacyState(value);
   } catch {
     return null;
@@ -235,9 +267,40 @@ function isCardRecord(value: unknown): value is CardRecord {
   );
 }
 
-function isGameStateV2(value: unknown): value is GameState {
+function isGameStateV3(value: unknown): value is GameState {
   if (!value || typeof value !== "object") return false;
   const state = value as Partial<GameState>;
+  if (
+    state.version !== 3 ||
+    !Array.isArray(state.remaining) ||
+    !Array.isArray(state.excluded) ||
+    !state.hands ||
+    !Array.isArray(state.used) ||
+    !Array.isArray(state.discarded) ||
+    !state.settings
+  ) return false;
+  const hands = state.hands as Partial<Record<HandId, unknown>>;
+  return (
+    state.remaining.every(isCard) &&
+    state.excluded.every(isCard) &&
+    Array.isArray(hands.shared) && hands.shared.every(isCard) &&
+    Array.isArray(hands.playerA) && hands.playerA.every(isCard) &&
+    Array.isArray(hands.playerB) && hands.playerB.every(isCard) &&
+    state.used.every(isCardRecord) &&
+    state.discarded.every(isCardRecord) &&
+    ["shared", "playerA", "playerB"].includes(String(state.activeHand)) &&
+    ["shared", "dual"].includes(String(state.settings.handMode))
+  );
+}
+
+type GameStateV2 = Omit<GameState, "version" | "excluded"> & {
+  version: 2;
+  settings: Omit<GameSettings, "excludedDefinitionIds">;
+};
+
+function isGameStateV2(value: unknown): value is GameStateV2 {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<GameStateV2>;
   if (
     state.version !== 2 ||
     !Array.isArray(state.remaining) ||
@@ -290,6 +353,7 @@ function hydrateState(state: GameState): GameState {
   return {
     ...state,
     remaining: state.remaining.map(hydrateCard),
+    excluded: state.excluded.map(hydrateCard),
     hands: {
       shared: state.hands.shared.map(hydrateCard),
       playerA: state.hands.playerA.map(hydrateCard),
@@ -301,11 +365,21 @@ function hydrateState(state: GameState): GameState {
   };
 }
 
+function migrateV2State(state: GameStateV2): GameState {
+  return hydrateState({
+    ...state,
+    version: 3,
+    excluded: [],
+    settings: { ...state.settings, excludedDefinitionIds: [] },
+  });
+}
+
 function migrateLegacyState(legacy: LegacyState): GameState {
   const settings = { ...DEFAULT_SETTINGS, sharedHandSize: legacy.hand.length };
   return {
-    version: 2,
+    version: 3,
     remaining: legacy.remaining.map(hydrateCard),
+    excluded: [],
     hands: { shared: legacy.hand.map(hydrateCard), playerA: [], playerB: [] },
     used: legacy.used.map((card, index) => ({
       card: hydrateCard(card),
@@ -314,6 +388,6 @@ function migrateLegacyState(legacy: LegacyState): GameState {
     })),
     discarded: [],
     activeHand: "shared",
-    settings,
+    settings: { ...settings, excludedDefinitionIds: [] },
   };
 }

@@ -11,8 +11,10 @@ import {
   loadGameState,
   playCard,
   resetGame,
-  skipUnsafeCard,
+  setExcludedDefinitions,
+  skipCard,
 } from "../src/lib/deck";
+import { CARD_DEFINITIONS } from "../src/data/cards";
 
 const STORAGE_KEY = "billiards-trick-cards:v2";
 const LEGACY_STORAGE_KEY = "neon-pool-cards:v1";
@@ -45,12 +47,98 @@ function Card({ card, owner, used, fresh, onUse, onSkip }: CardProps) {
       {onUse && (
         <div className="card-actions">
           <button className="use-button" onClick={onUse}>使用此卡</button>
-          {card.safetyNote && onSkip && (
-            <button className="skip-button" onClick={onSkip}>安全跳过并补抽</button>
-          )}
+          {onSkip && <button className="skip-button" onClick={onSkip}>双方同意，跳过并补抽</button>}
         </div>
       )}
     </article>
+  );
+}
+
+function DeckLibrary({
+  excludedIds,
+  onChange,
+}: {
+  excludedIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selected = new Set(excludedIds);
+  const visibleCards = CARD_DEFINITIONS.filter((card) =>
+    `${card.id} ${card.title} ${card.effect}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const excludedCount = CARD_DEFINITIONS
+    .filter((card) => selected.has(card.id))
+    .reduce((sum, card) => sum + card.count, 0);
+
+  const toggle = (definitionId: string) => {
+    const next = new Set(selected);
+    if (next.has(definitionId)) next.delete(definitionId);
+    else next.add(definitionId);
+    onChange(Array.from(next));
+  };
+
+  return (
+    <div className="deck-library">
+      <div className="library-tools">
+        <label>
+          <span className="sr-only">搜索卡牌</span>
+          <input
+            type="search"
+            placeholder="搜索名称或效果"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <span>本局纳入 <b>{51 - excludedCount}</b> 张</span>
+        {excludedIds.length > 0 && <button onClick={() => onChange([])}>恢复全部</button>}
+      </div>
+      <div className="library-list" aria-label="完整卡牌清单">
+        {visibleCards.map((card) => {
+          const isExcluded = selected.has(card.id);
+          return (
+            <label key={card.id} className={isExcluded ? "excluded" : ""}>
+              <input
+                type="checkbox"
+                checked={isExcluded}
+                onChange={() => toggle(card.id)}
+              />
+              <span className="library-number">{card.id.slice(-3)}</span>
+              <span className="library-copy"><b>{card.title}</b><small>{card.effect}</small></span>
+              {card.count > 1 && <em>×{card.count}</em>}
+              <strong>{isExcluded ? "本局排除" : "参与抽取"}</strong>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DeckDialog({
+  excludedIds,
+  onClose,
+  onApply,
+}: {
+  excludedIds: string[];
+  onClose: () => void;
+  onApply: (ids: string[]) => void;
+}) {
+  const [draft, setDraft] = useState(excludedIds);
+  return (
+    <div className="modal-backdrop">
+      <section className="deck-dialog" role="dialog" aria-modal="true" aria-labelledby="deck-title">
+        <div className="dialog-heading">
+          <div><p className="section-kicker">FULL DECK · 50 RULES / 51 CARDS</p><h2 id="deck-title">本局牌库</h2></div>
+          <button className="close-button" aria-label="关闭牌库" onClick={onClose}>×</button>
+        </div>
+        <p className="setup-intro">勾选不参与本局抽取的卡牌。进行中修改只影响尚未抽出的牌，已经在手牌或记录中的卡牌不会被移除。</p>
+        <DeckLibrary excludedIds={draft} onChange={setDraft} />
+        <div className="dialog-actions">
+          <button className="quiet-button" onClick={onClose}>取消</button>
+          <button className="primary-button" onClick={() => onApply(draft)}>应用牌库范围</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -96,10 +184,15 @@ function SetupDialog({
   const total = draft.handMode === "shared"
     ? draft.sharedHandSize
     : draft.playerAHandSize + draft.playerBHandSize;
+  const excludedCount = CARD_DEFINITIONS
+    .filter((card) => draft.excludedDefinitionIds.includes(card.id))
+    .reduce((sum, card) => sum + card.count, 0);
+  const availableCount = 51 - excludedCount;
   const values = draft.handMode === "shared"
     ? [draft.sharedHandSize]
     : [draft.playerAHandSize, draft.playerBHandSize];
-  const invalid = total > 51 || values.some((value) => !Number.isInteger(value) || value < 0 || value > 51);
+  const invalid = availableCount < 1 || total > availableCount ||
+    values.some((value) => !Number.isInteger(value) || value < 0 || value > availableCount);
 
   return (
     <div className="modal-backdrop">
@@ -158,8 +251,19 @@ function SetupDialog({
           )}
         </div>
         <p className={invalid ? "deal-total error" : "deal-total"}>
-          共发 {total} 张 · 牌库保留 {Math.max(0, 51 - total)} 张
+          共发 {total} 张 · 抽取范围保留 {Math.max(0, availableCount - total)} 张
         </p>
+
+        <details className="setup-deck-picker">
+          <summary>
+            <span><b>设置本局牌库</b><small>当前纳入 {availableCount} 张</small></span>
+            <i>⌄</i>
+          </summary>
+          <DeckLibrary
+            excludedIds={draft.excludedDefinitionIds}
+            onChange={(excludedDefinitionIds) => setDraft({ ...draft, excludedDefinitionIds })}
+          />
+        </details>
 
         <aside className="safety-brief">
           <b>安全第一</b>
@@ -187,6 +291,7 @@ export default function GameApp() {
   }));
   const [ready, setReady] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [deckOpen, setDeckOpen] = useState(false);
   const [amount, setAmount] = useState("1");
   const [freshIds, setFreshIds] = useState<string[]>([]);
   const [undoSnapshot, setUndoSnapshot] = useState<GameState | null>(null);
@@ -271,12 +376,22 @@ export default function GameApp() {
 
   const skip = (instanceId: string) => {
     const card = hand.find((item) => item.instanceId === instanceId);
-    const next = skipUnsafeCard(state, activeHand, instanceId);
+    const next = skipCard(state, activeHand, instanceId);
     const replacement = next.hands[activeHand][0];
     if (replacement && !state.hands[activeHand].some((item) => item.instanceId === replacement.instanceId)) {
       markFresh([replacement.instanceId]);
     }
-    commit(next, `已安全跳过“${card?.title ?? "风险卡"}”${state.remaining.length ? "并补抽 1 张" : ""}`);
+    commit(next, `双方同意跳过“${card?.title ?? "卡牌"}”${state.remaining.length ? "，已补抽 1 张" : ""}`);
+  };
+
+  const applyDeckRange = (definitionIds: string[]) => {
+    const next = setExcludedDefinitions(state, definitionIds);
+    const changed = next.excluded.length - state.excluded.length;
+    commit(
+      next,
+      changed === 0 ? "牌库范围未变化" : `本局牌库已更新，当前排除 ${next.excluded.length} 张`,
+    );
+    setDeckOpen(false);
   };
 
   if (!ready) return <main className="loading">正在整理牌库…</main>;
@@ -303,10 +418,12 @@ export default function GameApp() {
           <span className="live-dot" aria-hidden="true" />
           <div><small>当前模式</small><b>{state.settings.handMode === "shared" ? "一套共用手牌" : "双人独立手牌"}</b></div>
         </div>
-        <div className="console-stat"><b>{state.remaining.length}</b><span>牌库</span></div>
+        <button className="console-stat deck-stat" onClick={() => setDeckOpen(true)}>
+          <b>{state.remaining.length}</b><span>牌库 · 点击查看</span>
+        </button>
         <div className="console-stat"><b>{totalInHands}</b><span>手牌</span></div>
         <div className="console-stat"><b>{state.used.length}</b><span>已使用</span></div>
-        <div className="console-stat"><b>{state.discarded.length}</b><span>安全跳过</span></div>
+        <div className="console-stat"><b>{state.discarded.length}</b><span>已跳过</span></div>
       </section>
 
       {state.settings.handMode === "dual" && (
@@ -324,36 +441,6 @@ export default function GameApp() {
           ))}
         </nav>
       )}
-
-      <section className="draw-panel">
-        <div className="deck-visual" aria-hidden="true">
-          <span className="deck-card back-one" />
-          <span className="deck-card back-two" />
-          <span className="deck-card back-main"><i>8</i></span>
-        </div>
-        <div className="draw-copy">
-          <p className="section-kicker">DRAW FROM THE DECK</p>
-          <h2>抽取新卡牌</h2>
-          <p className={invalid ? "error" : ""}>{hint}</p>
-        </div>
-        <div className="draw-controls">
-          <label>
-            <span>抽取数量</span>
-            <input
-              aria-label="抽取数量"
-              type="number"
-              inputMode="numeric"
-              min="1"
-              max={state.remaining.length}
-              value={amount}
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </label>
-          <button className="draw-button" disabled={invalid || state.remaining.length === 0} onClick={draw}>
-            抽取卡牌 <span>→</span>
-          </button>
-        </div>
-      </section>
 
       <section className="card-section">
         <div className="section-heading">
@@ -381,6 +468,39 @@ export default function GameApp() {
         )}
       </section>
 
+      <section className="draw-panel">
+        <button className="deck-visual" onClick={() => setDeckOpen(true)} aria-label="查看并设置本局牌库">
+          <span className="deck-card back-one" />
+          <span className="deck-card back-two" />
+          <span className="deck-card back-main"><i>8</i></span>
+        </button>
+        <div className="draw-copy">
+          <p className="section-kicker">DRAW FROM THE DECK</p>
+          <h2>抽取新卡牌</h2>
+          <p className={invalid ? "error" : ""}>{hint}</p>
+          <button className="library-link" onClick={() => setDeckOpen(true)}>
+            查看全部 50 种规则 · 已排除 {state.excluded.length} 张
+          </button>
+        </div>
+        <div className="draw-controls">
+          <label>
+            <span>抽取数量</span>
+            <input
+              aria-label="抽取数量"
+              type="number"
+              inputMode="numeric"
+              min="1"
+              max={state.remaining.length}
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </label>
+          <button className="draw-button" disabled={invalid || state.remaining.length === 0} onClick={draw}>
+            抽取卡牌 <span>→</span>
+          </button>
+        </div>
+      </section>
+
       <details className="history-section">
         <summary>
           <span><small>MATCH RECORD</small><b>本局记录</b></span>
@@ -388,7 +508,7 @@ export default function GameApp() {
         </summary>
         <div className="history-content">
           {state.used.length === 0 && state.discarded.length === 0 ? (
-            <p className="history-empty">使用过或安全跳过的卡牌会记录在这里。</p>
+            <p className="history-empty">使用过或经双方同意跳过的卡牌会记录在这里。</p>
           ) : (
             <ol className="history-list">
               {[...state.used.map((record) => ({ ...record, type: "used" as const })),
@@ -443,6 +563,14 @@ export default function GameApp() {
           hasGame={hasGame}
           onCancel={() => setSetupOpen(false)}
           onStart={startGame}
+        />
+      )}
+      {deckOpen && (
+        <DeckDialog
+          key={state.settings.excludedDefinitionIds.join(",")}
+          excludedIds={state.settings.excludedDefinitionIds}
+          onClose={() => setDeckOpen(false)}
+          onApply={applyDeckRange}
         />
       )}
     </main>

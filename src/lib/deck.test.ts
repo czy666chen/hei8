@@ -6,7 +6,8 @@ import {
   loadGameState,
   playCard,
   resetGame,
-  skipUnsafeCard,
+  setExcludedDefinitions,
+  skipCard,
 } from "./deck";
 
 const first = () => 0;
@@ -72,7 +73,7 @@ describe("卡牌核心逻辑", () => {
       remaining: state.remaining.filter((item) => item.instanceId !== risk!.instanceId),
       hands: { ...state.hands, shared: [risk!] },
     };
-    const skipped = skipUnsafeCard(custom, "shared", risk!.instanceId, first, 456);
+    const skipped = skipCard(custom, "shared", risk!.instanceId, first, 456);
     expect(skipped.discarded[0]).toMatchObject({ owner: "shared", recordedAt: 456 });
     expect(skipped.hands.shared).toHaveLength(1);
   });
@@ -90,7 +91,7 @@ describe("卡牌核心逻辑", () => {
       used: [deck[1]],
     };
     const migrated = loadGameState(JSON.stringify(legacy));
-    expect(migrated?.version).toBe(2);
+    expect(migrated?.version).toBe(3);
     expect(migrated?.hands.shared).toHaveLength(1);
     expect(migrated?.used[0].owner).toBe("shared");
   });
@@ -98,5 +99,35 @@ describe("卡牌核心逻辑", () => {
   it("不能抽取超过剩余数量的卡", () => {
     const state = resetGame({ ...DEFAULT_SETTINGS, sharedHandSize: 0 }, first);
     expect(() => drawCards(state, "shared", 52, first)).toThrow();
+  });
+
+  it("任何卡牌都可经同意跳过并补抽", () => {
+    const state = resetGame({ ...DEFAULT_SETTINGS, sharedHandSize: 1 }, first);
+    const ordinary = state.hands.shared.find((card) => !card.safetyNote)!;
+    const skipped = skipCard(state, "shared", ordinary.instanceId, first, 789);
+    expect(skipped.discarded[0].card.instanceId).toBe(ordinary.instanceId);
+    expect(skipped.hands.shared).toHaveLength(1);
+  });
+
+  it("可从本局剩余牌库排除并重新纳入整类卡牌", () => {
+    const state = resetGame({ ...DEFAULT_SETTINGS, sharedHandSize: 0 }, first);
+    const excluded = setExcludedDefinitions(state, ["card-026"]);
+    expect(excluded.excluded).toHaveLength(2);
+    expect(excluded.remaining).toHaveLength(49);
+    expect(excluded.settings.excludedDefinitionIds).toEqual(["card-026"]);
+    const restored = setExcludedDefinitions(excluded, []);
+    expect(restored.excluded).toHaveLength(0);
+    expect(restored.remaining).toHaveLength(51);
+  });
+
+  it("新局会在发牌前应用排除范围", () => {
+    const state = resetGame({
+      ...DEFAULT_SETTINGS,
+      sharedHandSize: 3,
+      excludedDefinitionIds: ["card-026"],
+    }, first);
+    expect(state.excluded).toHaveLength(2);
+    expect(state.remaining).toHaveLength(46);
+    expect(state.hands.shared.every((card) => card.definitionId !== "card-026")).toBe(true);
   });
 });
