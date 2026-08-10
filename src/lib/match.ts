@@ -1,4 +1,5 @@
 import { CardInstance, createDeck, secureRandomIndex } from "./deck";
+import { getOfficialDeck, OfficialDeckId } from "./official-decks";
 
 export type MatchMode = "cards" | "score" | "score_cards";
 export type CardMode = "none" | "shared" | "independent";
@@ -49,6 +50,13 @@ export interface MatchCardState {
   skipped: CardInstance[];
   events: CardEvent[];
   initialHandSize: number;
+  deckSnapshot: {
+    id: OfficialDeckId;
+    version: 1;
+    name: string;
+    definitionIds: string[];
+    cardCount: number;
+  };
 }
 
 export interface BilliardsMatch {
@@ -73,6 +81,7 @@ export interface MatchDraft {
   rules: ScoreRule[];
   cardMode: CardMode;
   initialHandSize: number;
+  deckId?: OfficialDeckId;
 }
 
 export const DEFAULT_RULES: ScoreRule[] = [
@@ -115,16 +124,32 @@ export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = s
   const mode = draft.mode;
   let cards: MatchCardState | undefined;
   if (draft.cardMode !== "none") {
+    const officialDeck = getOfficialDeck(draft.deckId);
     const handIds = draft.cardMode === "shared" ? ["shared"] : players.map((player) => player.id);
-    let remaining = createDeck();
+    let remaining = createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId));
     const hands: Record<string, CardInstance[]> = {};
-    const size = Math.max(0, Math.min(Math.trunc(draft.initialHandSize), Math.floor(51 / handIds.length)));
+    const size = Math.max(0, Math.min(Math.trunc(draft.initialHandSize), Math.floor(remaining.length / handIds.length)));
     for (const handId of handIds) {
       const dealt = takeRandom(remaining, size, randomIndex);
       remaining = dealt.remaining;
       hands[handId] = dealt.drawn;
     }
-    cards = { mode: draft.cardMode, remaining, hands, used: [], skipped: [], events: [], initialHandSize: size };
+    cards = {
+      mode: draft.cardMode,
+      remaining,
+      hands,
+      used: [],
+      skipped: [],
+      events: [],
+      initialHandSize: size,
+      deckSnapshot: {
+        id: officialDeck.id,
+        version: officialDeck.version,
+        name: officialDeck.name,
+        definitionIds: [...officialDeck.definitionIds],
+        cardCount: createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId)).length,
+      },
+    };
   }
   return {
     version: 1,

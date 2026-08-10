@@ -28,6 +28,13 @@ describe("追分对局", () => {
     expect(new Set(match.players.map((player) => player.id)).size).toBe(2);
   });
 
+  it.each([2, 4, 8])("支持 %i 人建立核心对局", (playerCount) => {
+    const playerNames = Array.from({ length: playerCount }, (_, index) => `玩家 ${index + 1}`);
+    const match = createMatch({ ...draft, playerNames }, 100, first);
+    expect(match.players).toHaveLength(playerCount);
+    expect(match.currentPlayerId).toBe(match.players[0].id);
+  });
+
   it("按自定义分值记分并自动轮转", () => {
     const match = createMatch(draft, 100, first);
     const scored = applyScore(match, "normal-win", match.players[0].id, 200);
@@ -57,6 +64,16 @@ describe("追分对局", () => {
 });
 
 describe("追分与奇招牌组合", () => {
+  it.each([
+    ["complete", 51],
+    ["light", 25],
+    ["safe", 37],
+  ] as const)("%s 官方牌组保存不可变版本快照", (deckId, expectedCount) => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 0, deckId }, 100, first);
+    expect(match.cards!.deckSnapshot).toMatchObject({ id: deckId, version: 1, cardCount: expectedCount });
+    expect(match.cards!.deckSnapshot.definitionIds).not.toBe(match.cards!.remaining);
+    expect(match.cards!.remaining).toHaveLength(expectedCount);
+  });
   it("独立手牌不放回且每名玩家都有起始手牌", () => {
     const match = createMatch({ ...draft, mode: "score_cards", cardMode: "independent", initialHandSize: 2 }, 100, first);
     const cards = Object.values(match.cards!.hands).flat();
