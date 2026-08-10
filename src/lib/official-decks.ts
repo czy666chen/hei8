@@ -1,6 +1,6 @@
 import { CARD_DEFINITIONS } from "../data/cards";
 
-export type OfficialDeckId = "complete" | "light" | "safe";
+export type OfficialDeckId = "complete" | "light" | "competitive" | "safe";
 
 export interface OfficialDeck {
   id: OfficialDeckId;
@@ -19,6 +19,9 @@ const lightIds = CARD_DEFINITIONS
 const safeIds = CARD_DEFINITIONS
   .filter((card) => !card.needsReview && !card.safetyNote)
   .map((card) => card.id);
+const competitiveIds = [
+  1, 3, 5, 8, 9, 10, 13, 14, 15, 18, 19, 21, 23, 26, 31, 32, 36, 37, 39, 40, 42, 44, 47, 48, 50,
+].map((number) => `card-${String(number).padStart(3, "0")}`);
 
 export const OFFICIAL_DECKS: OfficialDeck[] = [
   {
@@ -38,6 +41,15 @@ export const OFFICIAL_DECKS: OfficialDeck[] = [
     difficulty: "轻松",
     safety: "已排除待复核内容，仍请遵守卡面安全提示。",
     definitionIds: lightIds,
+  },
+  {
+    id: "competitive",
+    version: 1,
+    name: "竞技牌组",
+    description: "保留局势、球权与攻防决策类规则，排除表演和社交惩罚。",
+    difficulty: "标准",
+    safety: "不含身体动作挑战，适合更重视胜负与策略的对局。",
+    definitionIds: competitiveIds,
   },
   {
     id: "safe",

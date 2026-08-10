@@ -32,7 +32,7 @@
 .protection-actions button { min-height: 46px; }
 .danger-text { color: var(--red); }
 .audit-note { display: block; margin-top: 12px; color: var(--gold); line-height: 1.5; }
-.official-deck-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 30px; }
+.official-deck-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 30px; }
 .official-deck-grid .official-deck { grid-template-columns: 100px 1fr; margin-bottom: 0; padding: 20px; }
 .official-deck-grid .official-art { height: 120px; }
 .official-deck-grid .official-art span { width: 62px; height: 62px; font-size: 28px; }

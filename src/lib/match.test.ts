@@ -67,6 +67,7 @@ describe("追分与奇招牌组合", () => {
   it.each([
     ["complete", 51],
     ["light", 25],
+    ["competitive", 26],
     ["safe", 37],
   ] as const)("%s 官方牌组保存不可变版本快照", (deckId, expectedCount) => {
     const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 0, deckId }, 100, first);
