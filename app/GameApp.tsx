@@ -6,6 +6,8 @@ import { GameState, loadGameState } from "../src/lib/deck";
 import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId } from "../src/lib/official-decks";
 import {
   addMatchPlayer,
+  applyBlackGoldScore,
+  applyHandicapScore,
   applyScore,
   applyTransferScore,
   backfillScoreEvent,
@@ -42,13 +44,16 @@ type AppData = {
   activeMatch: BilliardsMatch | null;
   history: BilliardsMatch[];
   savedRules: ScoreRule[];
+  scorePresets: ScorePreset[];
   pausedMatches: BilliardsMatch[];
   recoverySnapshots: { match: BilliardsMatch; abandonedAt: number; reason: string }[];
 };
 
+type ScorePreset = { id: string; name: string; rules: ScoreRule[] };
+
 type StorageIssue = { message: string; raw: string };
 
-const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES, pausedMatches: [], recoverySnapshots: [] };
+const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES, scorePresets: [], pausedMatches: [], recoverySnapshots: [] };
 
 const NAV_ITEMS = [
   { path: "/", label: "对局", icon: "◎" },
@@ -108,6 +113,9 @@ function parseAppData(raw: string | null): AppData | null {
         activeMatch: isStoredMatch(data.activeMatch) ? data.activeMatch : null,
         history: data.history.filter(isStoredMatch),
         savedRules: Array.isArray(data.savedRules) ? data.savedRules : DEFAULT_RULES,
+        scorePresets: Array.isArray(data.scorePresets)
+          ? data.scorePresets.filter((preset) => preset && typeof preset.id === "string" && typeof preset.name === "string" && Array.isArray(preset.rules))
+          : [],
         pausedMatches: Array.isArray(data.pausedMatches) ? data.pausedMatches.filter(isStoredMatch) : [],
         recoverySnapshots: Array.isArray(data.recoverySnapshots)
           ? data.recoverySnapshots.filter((item) => item && isStoredMatch(item.match))
@@ -211,7 +219,7 @@ function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart:
   );
 }
 
-function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMode: MatchMode; savedRules: ScoreRule[]; onClose: () => void; onStart: (draft: MatchDraft, savePreset: boolean) => void }) {
+function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }: { initialMode: MatchMode; savedRules: ScoreRule[]; scorePresets: ScorePreset[]; onClose: () => void; onStart: (draft: MatchDraft, presets: ScorePreset[]) => void }) {
   const [names, setNames] = useState(["玩家 A", "玩家 B"]);
   const [initialScore, setInitialScore] = useState(0);
   const [playerScores, setPlayerScores] = useState([0, 0]);
@@ -222,12 +230,16 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
   const [deckId, setDeckId] = useState<OfficialDeckId>("complete");
   const [reviewing, setReviewing] = useState(false);
   const [savePreset, setSavePreset] = useState(false);
+  const [presets, setPresets] = useState(scorePresets.map((preset) => ({ ...preset, rules: preset.rules.map((rule) => ({ ...rule })) })));
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [presetName, setPresetName] = useState("");
+  const [newPresetId] = useState(() => `preset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const scoreEnabled = initialMode !== "cards";
   const selectedDeck = getOfficialDeck(deckId);
   const selectedDeckCount = officialDeckCardCount(selectedDeck);
   const validPlayers = names.map((name, index) => ({ name: name.trim(), initialScore: playerScores[index] ?? initialScore })).filter((player) => player.name);
   const validNames = validPlayers.map((player) => player.name);
-  const valid = validNames.length >= 2 && validNames.length <= 8 && validPlayers.every((player) => Number.isFinite(player.initialScore)) && rules.every((rule) => Number.isFinite(rule.value) && rule.value >= 0);
+  const valid = validNames.length >= 2 && validNames.length <= 8 && validPlayers.every((player) => Number.isFinite(player.initialScore)) && rules.every((rule) => Number.isFinite(rule.value) && rule.value >= 0) && (!savePreset || !!presetName.trim());
 
   const updateName = (index: number, value: string) => setNames(names.map((name, itemIndex) => itemIndex === index ? value : name));
   const updatePlayerScore = (index: number, value: number) => setPlayerScores(playerScores.map((score, itemIndex) => itemIndex === index ? value : score));
@@ -243,7 +255,35 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
     setNames(shuffled.map((player) => player.name));
     setPlayerScores(shuffled.map((player) => player.score));
   };
-  const submit = () => onStart({
+  const loadPreset = (id: string) => {
+    const preset = presets.find((item) => item.id === id);
+    setSelectedPresetId(id);
+    if (preset) { setRules(preset.rules.map((rule) => ({ ...rule }))); setPresetName(preset.name); }
+  };
+  const copyPreset = () => {
+    const source = presets.find((item) => item.id === selectedPresetId);
+    if (!source) return;
+    const copy = { id: `preset-${Date.now()}`, name: `${source.name} 副本`, rules: source.rules.map((rule) => ({ ...rule })) };
+    setPresets([...presets, copy]);
+    setSelectedPresetId(copy.id);
+    setPresetName(copy.name);
+    setRules(copy.rules.map((rule) => ({ ...rule })));
+    setSavePreset(true);
+  };
+  const deletePreset = () => {
+    if (!selectedPresetId) return;
+    setPresets(presets.filter((preset) => preset.id !== selectedPresetId));
+    setSelectedPresetId("");
+    setPresetName("");
+    setRules(savedRules.map((rule) => ({ ...rule })));
+  };
+  const submit = () => {
+    const nextPresets = savePreset && presetName.trim()
+      ? selectedPresetId
+        ? presets.map((preset) => preset.id === selectedPresetId ? { ...preset, name: presetName.trim(), rules: rules.map((rule) => ({ ...rule })) } : preset)
+        : [...presets, { id: newPresetId, name: presetName.trim(), rules: rules.map((rule) => ({ ...rule })) }]
+      : presets;
+    onStart({
     mode: initialMode === "cards" ? "cards" : cardMode === "none" ? "score" : "score_cards",
     playerNames: validNames,
     initialScore,
@@ -252,8 +292,9 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
     rules,
     cardMode: initialMode === "cards" && cardMode === "none" ? "shared" : cardMode,
     initialHandSize: cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize,
-    deckId,
-  }, savePreset);
+      deckId,
+    }, nextPresets);
+  };
 
   return (
     <div className="modal-backdrop">
@@ -282,6 +323,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
                 <div className="setup-title"><span>02</span><div><b>计分规则</b><small>所有分值都可修改</small></div></div>
                 <label className="initial-score"><span>统一设置初始积分</span><input type="number" inputMode="numeric" value={initialScore} onChange={(event) => { const value = Number(event.target.value); setInitialScore(value); setPlayerScores(playerScores.map(() => value)); }} /><small>可在玩家姓名右侧单独调整</small></label>
                 <div className="turn-strategy"><span>击球顺序</span><div className="segmented"><button className={turnStrategy === "fixed" ? "active" : ""} onClick={() => setTurnStrategy("fixed")}>固定轮转</button><button className={turnStrategy === "winner_stays" ? "active" : ""} onClick={() => setTurnStrategy("winner_stays")}>得分者继续</button></div></div>
+                <div className="preset-manager"><select aria-label="计分预设" value={selectedPresetId} onChange={(event) => loadPreset(event.target.value)}><option value="">当前 / 默认规则</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" disabled={!selectedPresetId} onClick={copyPreset}>复制</button><button type="button" disabled={!selectedPresetId} onClick={deletePreset}>删除</button></div>
                 <div className="rule-editor">
                   {rules.map((rule) => (
                     <label key={rule.id} className={!rule.enabled ? "disabled" : ""}>
@@ -293,7 +335,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
                   ))}
                 </div>
                 <button className="add-player add-score-rule" type="button" onClick={addCustomRule}>＋ 添加自定义计分项</button>
-                <label className="save-preset"><input type="checkbox" checked={savePreset} onChange={(event) => setSavePreset(event.target.checked)} /> 保存为本机常用计分预设</label>
+                <div className="save-preset"><label><input type="checkbox" checked={savePreset} onChange={(event) => setSavePreset(event.target.checked)} /> {selectedPresetId ? "保存对当前预设的编辑" : "另存为命名预设"}</label>{savePreset && <input aria-label="计分预设名称" maxLength={24} placeholder="例如：周五俱乐部规则" value={presetName} onChange={(event) => setPresetName(event.target.value)} />}</div>
               </section>
             )}
 
@@ -326,7 +368,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
   );
 }
 
-function ScoreBoard({ match, onScore, onTransfer, onBackfill, onCorrect, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string, note: string) => void; onTransfer: (winnerId: string, loserIds: string[], amount: number, note: string) => void; onBackfill: (playerId: string, delta: number, label: string, note: string) => void; onCorrect: (eventId: string) => void; onUndo: () => void }) {
+function ScoreBoard({ match, onScore, onTransfer, onBackfill, onBlackGold, onHandicap, onCorrect, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string, note: string) => void; onTransfer: (winnerId: string, loserIds: string[], amount: number, note: string) => void; onBackfill: (playerId: string, delta: number, label: string, note: string) => void; onBlackGold: (winnerId: string, baseAmount: number, note: string) => void; onHandicap: (beneficiaryId: string, grantorId: string, amount: number, note: string) => void; onCorrect: (eventId: string) => void; onUndo: () => void }) {
   const rankings = getRankings(match).filter((player) => player.active);
   const current = match.players.find((player) => player.id === match.currentPlayerId) ?? match.players[0];
   const [manualSelectedId, setManualSelectedId] = useState<string | null>(null);
@@ -339,6 +381,10 @@ function ScoreBoard({ match, onScore, onTransfer, onBackfill, onCorrect, onUndo 
   const [backfillDelta, setBackfillDelta] = useState(0);
   const [backfillLabel, setBackfillLabel] = useState("");
   const [backfillNote, setBackfillNote] = useState("");
+  const [specialOpen, setSpecialOpen] = useState(false);
+  const [specialAmount, setSpecialAmount] = useState(5);
+  const [handicapGrantorId, setHandicapGrantorId] = useState("");
+  const [specialNote, setSpecialNote] = useState("");
   const selectedId = manualSelectedId && match.players.some((player) => player.id === manualSelectedId)
     ? manualSelectedId
     : current.id;
@@ -365,6 +411,7 @@ function ScoreBoard({ match, onScore, onTransfer, onBackfill, onCorrect, onUndo 
         <label className="score-note"><span>本笔备注</span><input aria-label="下一笔计分备注" maxLength={80} placeholder="可选，例如：第三局翻中袋" value={scoreNote} onChange={(event) => setScoreNote(event.target.value)} /></label>
         <div className="transfer-entry"><button className="text-button" onClick={() => setTransferOpen(!transferOpen)}>⇄ {transferOpen ? "收起转账计分" : "转账计分"}</button>{transferOpen && <div className="transfer-panel"><header><b>获胜者：{match.players.find((player) => player.id === selectedId)?.name}</b><small>每名所选输家支付同样分数，总分保持不变</small></header><div className="transfer-losers">{rankings.filter((player) => player.id !== selectedId).map((player) => <label key={player.id}><input type="checkbox" checked={transferLosers.includes(player.id)} onChange={(event) => setTransferLosers(event.target.checked ? [...transferLosers, player.id] : transferLosers.filter((id) => id !== player.id))} />{player.name}</label>)}</div><div className="transfer-fields"><label><span>每人支付</span><input aria-label="每名输家支付分数" type="number" min="1" inputMode="numeric" value={transferAmount} onChange={(event) => setTransferAmount(Number(event.target.value))} /></label><label><span>备注</span><input aria-label="转账计分备注" maxLength={80} placeholder="可选" value={transferNote} onChange={(event) => setTransferNote(event.target.value)} /></label><button disabled={!transferLosers.length || transferAmount <= 0} onClick={() => { onTransfer(selectedId, transferLosers, transferAmount, transferNote); setTransferLosers([]); setTransferNote(""); setManualSelectedId(null); setTransferOpen(false); }}>确认转账</button></div></div>}</div>
         <div className="transfer-entry"><button className="text-button" onClick={() => setBackfillOpen(!backfillOpen)}>＋ {backfillOpen ? "收起补录" : "补录计分事件"}</button>{backfillOpen && <div className="backfill-panel"><label><span>原因</span><input aria-label="补录原因" maxLength={30} placeholder="例如：漏记犯规" value={backfillLabel} onChange={(event) => setBackfillLabel(event.target.value)} /></label><label><span>分值（可负数）</span><input aria-label="补录分值" type="number" inputMode="numeric" value={backfillDelta} onChange={(event) => setBackfillDelta(Number(event.target.value))} /></label><label><span>备注</span><input aria-label="补录备注" maxLength={80} placeholder="说明补录依据" value={backfillNote} onChange={(event) => setBackfillNote(event.target.value)} /></label><button disabled={!backfillLabel.trim() || backfillDelta === 0} onClick={() => { onBackfill(selectedId, backfillDelta, backfillLabel, backfillNote); setBackfillDelta(0); setBackfillLabel(""); setBackfillNote(""); setBackfillOpen(false); }}>确认补录</button></div>}</div>
+        <div className="transfer-entry"><button className="text-button" onClick={() => setSpecialOpen(!specialOpen)}>◆ {specialOpen ? "收起特殊规则" : "黑金 / 让杆"}</button>{specialOpen && <div className="special-score-panel"><label><span>基础分</span><input aria-label="特殊规则基础分" type="number" min="1" inputMode="numeric" value={specialAmount} onChange={(event) => setSpecialAmount(Number(event.target.value))} /></label><label><span>让分方</span><select aria-label="让杆让分方" value={handicapGrantorId} onChange={(event) => setHandicapGrantorId(event.target.value)}><option value="">请选择</option>{rankings.filter((player) => player.id !== selectedId).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}</select></label><label><span>备注</span><input aria-label="特殊规则备注" maxLength={80} placeholder="可选" value={specialNote} onChange={(event) => setSpecialNote(event.target.value)} /></label><button disabled={specialAmount <= 0} onClick={() => { onBlackGold(selectedId, specialAmount, specialNote); setSpecialNote(""); setSpecialOpen(false); }}>黑金结算（每家 ×2）</button><button disabled={specialAmount <= 0 || !handicapGrantorId} onClick={() => { onHandicap(selectedId, handicapGrantorId, specialAmount, specialNote); setSpecialNote(""); setHandicapGrantorId(""); setSpecialOpen(false); }}>记录让杆</button></div>}</div>
         <div className="ledger-preview">
           <div className="subheading"><b>最近流水</b><small>{match.scoreEvents.length} 笔</small></div>
           {match.scoreEvents.length ? match.scoreEvents.slice(0, 5).map((event) => {
@@ -445,7 +492,7 @@ function ActiveMatchView({ match, onChange, onFinish, toast }: { match: Billiard
         <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" onClick={onFinish}>结束对局</button></div>
       </section>
       {moreOpen && <><section className="match-info"><div><span>玩家顺序</span><b>{match.players.filter((player) => player.active).map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name} · {(match.turnStrategy ?? "fixed") === "fixed" ? "固定轮转" : "得分者继续"}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section><PlayerManager match={match} onChange={onChange} toast={toast} /></>}
-      {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId, note) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId, Date.now(), note)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onTransfer={(winnerId, loserIds, amount, note) => { onChange(applyTransferScore(match, winnerId, loserIds, amount, note)); toast(`已记录转账：每名输家支付 ${amount} 分`); }} onBackfill={(playerId, delta, label, note) => { onChange(backfillScoreEvent(match, playerId, delta, label, note)); toast(`已补录 ${label} ${delta > 0 ? "+" : ""}${delta} 分`); }} onCorrect={(eventId) => { onChange(correctScoreEvent(match, eventId, "手动更正")); toast("已追加更正事件，原流水保持不变"); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
+      {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId, note) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId, Date.now(), note)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onTransfer={(winnerId, loserIds, amount, note) => { onChange(applyTransferScore(match, winnerId, loserIds, amount, note)); toast(`已记录转账：每名输家支付 ${amount} 分`); }} onBackfill={(playerId, delta, label, note) => { onChange(backfillScoreEvent(match, playerId, delta, label, note)); toast(`已补录 ${label} ${delta > 0 ? "+" : ""}${delta} 分`); }} onBlackGold={(winnerId, baseAmount, note) => { onChange(applyBlackGoldScore(match, winnerId, baseAmount, note)); toast(`黑金结算完成：每家支付 ${baseAmount * 2} 分`); }} onHandicap={(beneficiaryId, grantorId, amount, note) => { onChange(applyHandicapScore(match, beneficiaryId, grantorId, amount, note)); toast(`已记录让杆 ${amount} 分`); }} onCorrect={(eventId) => { onChange(correctScoreEvent(match, eventId, "手动更正")); toast("已追加更正事件，原流水保持不变"); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
       {match.cards && <CardBoard match={match} onChange={onChange} toast={toast} />}
       <div className="match-dock"><button disabled={!match.scoreEvents.length} onClick={() => onChange(undoLastScore(match))}>↶<span>撤销</span></button><button className="dock-main" onClick={() => match.cards ? document.querySelector(".card-board")?.scrollIntoView({ behavior: "smooth" }) : document.querySelector(".scoring-panel")?.scrollIntoView({ behavior: "smooth" })}>{match.cards ? "抽牌" : "记分"}</button><button onClick={() => setMoreOpen(!moreOpen)}>•••<span>更多</span></button></div>
     </div>
@@ -541,10 +588,10 @@ export default function GameApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const start = (draft: MatchDraft, savePreset: boolean) => {
+  const start = (draft: MatchDraft, scorePresets: ScorePreset[]) => {
     if (data.activeMatch) return;
     const match = createMatch(draft);
-    setData({ ...data, activeMatch: match, ...(savePreset ? { savedRules: draft.rules } : {}) });
+    setData({ ...data, activeMatch: match, savedRules: draft.rules, scorePresets });
     setSetupMode(null);
     navigate("/");
     setStatus("新对局已开始并保存到本机");
@@ -629,7 +676,7 @@ export default function GameApp() {
     <main className="app-root">
       <AppHeader path={path} active={!!data.activeMatch} onNavigate={navigate} />
       {page}
-      {setupMode && <SetupDialog initialMode={setupMode} savedRules={data.savedRules} onClose={() => setSetupMode(null)} onStart={start} />}
+      {setupMode && <SetupDialog initialMode={setupMode} savedRules={data.savedRules} scorePresets={data.scorePresets} onClose={() => setSetupMode(null)} onStart={start} />}
       {confirmEnd && <ConfirmDialog title="结束本场对局？" body="系统会保存最终排名、规则快照、计分流水和卡牌记录。结束后本场默认只读。" onCancel={() => setConfirmEnd(false)} onConfirm={complete} />}
       {pendingMode && data.activeMatch && <ActiveMatchProtectionDialog match={data.activeMatch} discardArmed={discardArmed} onContinue={continueActive} onSave={saveActiveAndCreate} onArmDiscard={() => setDiscardArmed(true)} onDiscard={abandonActiveAndCreate} />}
       {storageIssue && <StorageRecoveryDialog issue={storageIssue} onRetry={retryStorage} onReset={resetStorage} />}

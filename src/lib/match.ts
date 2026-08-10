@@ -256,6 +256,23 @@ export function applyTransferScore(match: BilliardsMatch, winnerId: string, lose
   };
 }
 
+export function applyBlackGoldScore(match: BilliardsMatch, winnerId: string, baseAmount: number, note = "", now = Date.now()): BilliardsMatch {
+  const loserIds = match.players.filter((player) => player.active && player.id !== winnerId).map((player) => player.id);
+  const amount = Math.abs(Math.trunc(baseAmount)) * 2;
+  const updated = applyTransferScore(match, winnerId, loserIds, amount, note, now);
+  if (updated === match) return match;
+  const [event, ...events] = updated.scoreEvents;
+  return { ...updated, scoreEvents: [{ ...event, label: `黑金 · 每家 ${amount} 分` }, ...events] };
+}
+
+export function applyHandicapScore(match: BilliardsMatch, beneficiaryId: string, grantorId: string, amount: number, note = "", now = Date.now()): BilliardsMatch {
+  const value = Math.abs(Math.trunc(amount));
+  const updated = applyTransferScore(match, beneficiaryId, [grantorId], value, note, now);
+  if (updated === match) return match;
+  const [event, ...events] = updated.scoreEvents;
+  return { ...updated, scoreEvents: [{ ...event, label: `让杆 · ${value} 分` }, ...events] };
+}
+
 export function correctScoreEvent(match: BilliardsMatch, eventId: string, note: string, now = Date.now(), allowCompleted = false): BilliardsMatch {
   const original = match.scoreEvents.find((event) => event.id === eventId && event.type !== "correction");
   if (!original || (match.status !== "active" && !allowCompleted) || match.scoreEvents.some((event) => event.correctsEventId === eventId)) return match;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   addMatchPlayer,
+  applyBlackGoldScore,
+  applyHandicapScore,
   applyScore,
   applyTransferScore,
   backfillScoreEvent,
@@ -98,6 +100,16 @@ describe("追分对局", () => {
     expect(transferred.players.reduce((sum, player) => sum + player.score, 0)).toBe(totalBefore);
     expect(transferred.scoreEvents[0]).toMatchObject({ type: "transfer", note: "两位输家各付 10" });
     expect(undoLastScore(transferred).players.map((player) => player.score)).toEqual([100, 100, 100]);
+  });
+
+  it("黑金按双倍基础分由每家支付，让杆在两名玩家间转移", () => {
+    const match = createMatch(draft, 100, first);
+    const blackGold = applyBlackGoldScore(match, match.players[0].id, 5, "黑金结算", 200);
+    expect(blackGold.players.map((player) => player.score)).toEqual([120, 90, 90]);
+    expect(blackGold.scoreEvents[0]).toMatchObject({ label: "黑金 · 每家 10 分", note: "黑金结算" });
+    const handicap = applyHandicapScore(blackGold, match.players[2].id, match.players[0].id, 8, "开局让杆", 300);
+    expect(handicap.players.map((player) => player.score)).toEqual([112, 90, 98]);
+    expect(handicap.scoreEvents[0]).toMatchObject({ label: "让杆 · 8 分", note: "开局让杆" });
   });
 
   it("事件更正保留原流水并追加关联反向事件", () => {
