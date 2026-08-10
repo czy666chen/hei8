@@ -8,6 +8,7 @@ import {
   addMatchPlayer,
   applyScore,
   applyTransferScore,
+  backfillScoreEvent,
   BilliardsMatch,
   CardMode,
   createMatch,
@@ -325,7 +326,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
   );
 }
 
-function ScoreBoard({ match, onScore, onTransfer, onCorrect, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string) => void; onTransfer: (winnerId: string, loserIds: string[], amount: number, note: string) => void; onCorrect: (eventId: string) => void; onUndo: () => void }) {
+function ScoreBoard({ match, onScore, onTransfer, onBackfill, onCorrect, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string, note: string) => void; onTransfer: (winnerId: string, loserIds: string[], amount: number, note: string) => void; onBackfill: (playerId: string, delta: number, label: string, note: string) => void; onCorrect: (eventId: string) => void; onUndo: () => void }) {
   const rankings = getRankings(match).filter((player) => player.active);
   const current = match.players.find((player) => player.id === match.currentPlayerId) ?? match.players[0];
   const [manualSelectedId, setManualSelectedId] = useState<string | null>(null);
@@ -333,6 +334,11 @@ function ScoreBoard({ match, onScore, onTransfer, onCorrect, onUndo }: { match: 
   const [transferAmount, setTransferAmount] = useState(10);
   const [transferLosers, setTransferLosers] = useState<string[]>([]);
   const [transferNote, setTransferNote] = useState("");
+  const [scoreNote, setScoreNote] = useState("");
+  const [backfillOpen, setBackfillOpen] = useState(false);
+  const [backfillDelta, setBackfillDelta] = useState(0);
+  const [backfillLabel, setBackfillLabel] = useState("");
+  const [backfillNote, setBackfillNote] = useState("");
   const selectedId = manualSelectedId && match.players.some((player) => player.id === manualSelectedId)
     ? manualSelectedId
     : current.id;
@@ -353,10 +359,12 @@ function ScoreBoard({ match, onScore, onTransfer, onCorrect, onUndo }: { match: 
         <div className="section-heading"><div><p className="kicker">QUICK SCORE</p><h2>为 {match.players.find((player) => player.id === selectedId)?.name} 记分</h2></div><button className="text-button" disabled={!match.scoreEvents.length} onClick={onUndo}>↶ 撤销上一笔</button></div>
         <div className="score-actions">
           {match.rules.filter((rule) => rule.enabled).map((rule) => (
-            <button key={rule.id} className={rule.color} onClick={() => { onScore(rule.id, selectedId); setManualSelectedId(null); }}><span>{rule.kind === "penalty" ? "−" : "+"}{rule.value}</span><b>{rule.label}</b></button>
+            <button key={rule.id} className={rule.color} onClick={() => { onScore(rule.id, selectedId, scoreNote); setScoreNote(""); setManualSelectedId(null); }}><span>{rule.kind === "penalty" ? "−" : "+"}{rule.value}</span><b>{rule.label}</b></button>
           ))}
         </div>
+        <label className="score-note"><span>本笔备注</span><input aria-label="下一笔计分备注" maxLength={80} placeholder="可选，例如：第三局翻中袋" value={scoreNote} onChange={(event) => setScoreNote(event.target.value)} /></label>
         <div className="transfer-entry"><button className="text-button" onClick={() => setTransferOpen(!transferOpen)}>⇄ {transferOpen ? "收起转账计分" : "转账计分"}</button>{transferOpen && <div className="transfer-panel"><header><b>获胜者：{match.players.find((player) => player.id === selectedId)?.name}</b><small>每名所选输家支付同样分数，总分保持不变</small></header><div className="transfer-losers">{rankings.filter((player) => player.id !== selectedId).map((player) => <label key={player.id}><input type="checkbox" checked={transferLosers.includes(player.id)} onChange={(event) => setTransferLosers(event.target.checked ? [...transferLosers, player.id] : transferLosers.filter((id) => id !== player.id))} />{player.name}</label>)}</div><div className="transfer-fields"><label><span>每人支付</span><input aria-label="每名输家支付分数" type="number" min="1" inputMode="numeric" value={transferAmount} onChange={(event) => setTransferAmount(Number(event.target.value))} /></label><label><span>备注</span><input aria-label="转账计分备注" maxLength={80} placeholder="可选" value={transferNote} onChange={(event) => setTransferNote(event.target.value)} /></label><button disabled={!transferLosers.length || transferAmount <= 0} onClick={() => { onTransfer(selectedId, transferLosers, transferAmount, transferNote); setTransferLosers([]); setTransferNote(""); setManualSelectedId(null); setTransferOpen(false); }}>确认转账</button></div></div>}</div>
+        <div className="transfer-entry"><button className="text-button" onClick={() => setBackfillOpen(!backfillOpen)}>＋ {backfillOpen ? "收起补录" : "补录计分事件"}</button>{backfillOpen && <div className="backfill-panel"><label><span>原因</span><input aria-label="补录原因" maxLength={30} placeholder="例如：漏记犯规" value={backfillLabel} onChange={(event) => setBackfillLabel(event.target.value)} /></label><label><span>分值（可负数）</span><input aria-label="补录分值" type="number" inputMode="numeric" value={backfillDelta} onChange={(event) => setBackfillDelta(Number(event.target.value))} /></label><label><span>备注</span><input aria-label="补录备注" maxLength={80} placeholder="说明补录依据" value={backfillNote} onChange={(event) => setBackfillNote(event.target.value)} /></label><button disabled={!backfillLabel.trim() || backfillDelta === 0} onClick={() => { onBackfill(selectedId, backfillDelta, backfillLabel, backfillNote); setBackfillDelta(0); setBackfillLabel(""); setBackfillNote(""); setBackfillOpen(false); }}>确认补录</button></div>}</div>
         <div className="ledger-preview">
           <div className="subheading"><b>最近流水</b><small>{match.scoreEvents.length} 笔</small></div>
           {match.scoreEvents.length ? match.scoreEvents.slice(0, 5).map((event) => {
@@ -437,7 +445,7 @@ function ActiveMatchView({ match, onChange, onFinish, toast }: { match: Billiard
         <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" onClick={onFinish}>结束对局</button></div>
       </section>
       {moreOpen && <><section className="match-info"><div><span>玩家顺序</span><b>{match.players.filter((player) => player.active).map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name} · {(match.turnStrategy ?? "fixed") === "fixed" ? "固定轮转" : "得分者继续"}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section><PlayerManager match={match} onChange={onChange} toast={toast} /></>}
-      {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onTransfer={(winnerId, loserIds, amount, note) => { onChange(applyTransferScore(match, winnerId, loserIds, amount, note)); toast(`已记录转账：每名输家支付 ${amount} 分`); }} onCorrect={(eventId) => { onChange(correctScoreEvent(match, eventId, "手动更正")); toast("已追加更正事件，原流水保持不变"); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
+      {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId, note) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId, Date.now(), note)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onTransfer={(winnerId, loserIds, amount, note) => { onChange(applyTransferScore(match, winnerId, loserIds, amount, note)); toast(`已记录转账：每名输家支付 ${amount} 分`); }} onBackfill={(playerId, delta, label, note) => { onChange(backfillScoreEvent(match, playerId, delta, label, note)); toast(`已补录 ${label} ${delta > 0 ? "+" : ""}${delta} 分`); }} onCorrect={(eventId) => { onChange(correctScoreEvent(match, eventId, "手动更正")); toast("已追加更正事件，原流水保持不变"); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
       {match.cards && <CardBoard match={match} onChange={onChange} toast={toast} />}
       <div className="match-dock"><button disabled={!match.scoreEvents.length} onClick={() => onChange(undoLastScore(match))}>↶<span>撤销</span></button><button className="dock-main" onClick={() => match.cards ? document.querySelector(".card-board")?.scrollIntoView({ behavior: "smooth" }) : document.querySelector(".scoring-panel")?.scrollIntoView({ behavior: "smooth" })}>{match.cards ? "抽牌" : "记分"}</button><button onClick={() => setMoreOpen(!moreOpen)}>•••<span>更多</span></button></div>
     </div>
@@ -456,6 +464,12 @@ function DecksPage() {
   const [query, setQuery] = useState("");
   const cards = CARD_DEFINITIONS.filter((card) => `${card.title}${card.effect}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <div className="content-page page-shell"><header className="page-title split"><div><p className="kicker">DECK LIBRARY</p><h1>牌组</h1><p>四个官方牌组均按版本保存完整快照，后续更新不会改变旧战绩。</p></div><div className="deck-summary"><span>4<small>官方牌组</small></span><span>V1<small>当前版本</small></span></div></header><div className="official-deck-grid">{OFFICIAL_DECKS.map((deck) => <section className="official-deck" key={deck.id}><div className="official-art"><span>8</span></div><div><p className="kicker">OFFICIAL · V{deck.version}</p><h2>{deck.name}</h2><p>{deck.description}</p><div className="tag-row"><span>{officialDeckCardCount(deck)} 张</span><span>{deck.difficulty}</span><span>{deck.safety}</span></div></div></section>)}</div><section className="card-catalog"><div className="section-heading"><div><p className="kicker">ALL CARDS</p><h2>完整卡牌清单</h2></div><label className="search"><span>⌕</span><input type="search" placeholder="搜索名称或效果" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><div className="catalog-list">{cards.map((card) => <article key={card.id}><span>{card.id.slice(-3)}</span><div><b>{card.title}{card.count > 1 && <em> ×{card.count}</em>}</b><p>{card.effect}</p>{card.safetyNote && <small>! {card.safetyNote}</small>}</div></article>)}</div></section></div>;
+}
+
+function HistoryCorrectionDock({ match, onChange }: { match: BilliardsMatch; onChange: (match: BilliardsMatch) => void }) {
+  const [enabled, setEnabled] = useState(false);
+  const correctable = match.scoreEvents.filter((event) => event.type !== "correction" && !match.scoreEvents.some((item) => item.correctsEventId === event.id));
+  return <aside className={`history-correction ${enabled ? "enabled" : ""}`}><div><b>{enabled ? "受控纠错模式已开启" : "已结束对局默认只读"}</b><small>{enabled ? "更正会追加反向事件，原流水不会删除。" : "仅在确认需要修正结算时开启。"}</small></div><button className={enabled ? "danger-button" : "secondary"} onClick={() => setEnabled(!enabled)}>{enabled ? "退出纠错" : "进入纠错模式"}</button>{enabled && <div className="history-correction-events">{correctable.length ? correctable.slice(0, 8).map((event) => <button key={event.id} onClick={() => { onChange(correctScoreEvent(match, event.id, "结束局受控更正", Date.now(), true)); setEnabled(false); }}>更正：{match.players.find((player) => player.id === event.playerId)?.name} · {event.label}</button>) : <small>当前没有可更正的计分事件。</small>}</div>}</aside>;
 }
 
 function HistoryPage({ history, selectedId, onSelect }: { history: BilliardsMatch[]; selectedId?: string; onSelect: (id: string) => void }) {
@@ -600,7 +614,11 @@ export default function GameApp() {
       : <EmptyHome onStart={openSetup} onNavigate={navigate} onResume={resumePaused} recent={data.history[0]} paused={data.pausedMatches} />;
     if (path === "/play") return <PlayPage onStart={openSetup} />;
     if (path === "/decks") return <DecksPage />;
-    if (path.startsWith("/history")) return <HistoryPage history={data.history} selectedId={path.split("/")[2]} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />;
+    if (path.startsWith("/history")) {
+      const selectedId = path.split("/")[2];
+      const selectedMatch = data.history.find((match) => match.id === selectedId);
+      return <><HistoryPage history={data.history} selectedId={selectedId} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />{selectedMatch && selectedMatch.scoreEvents.length > 0 && <HistoryCorrectionDock match={selectedMatch} onChange={(updated) => setData({ ...data, history: data.history.map((match) => match.id === updated.id ? updated : match) })} />}</>;
+    }
     if (path === "/profile") return <ProfilePage history={data.history} />;
     return <div className="large-empty page-shell"><span>404</span><h2>页面不存在</h2><button className="primary" onClick={() => navigate("/")}>返回对局</button></div>;
   })();

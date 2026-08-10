@@ -3,6 +3,7 @@ import {
   addMatchPlayer,
   applyScore,
   applyTransferScore,
+  backfillScoreEvent,
   createMatch,
   correctScoreEvent,
   deleteMatchPlayer,
@@ -108,6 +109,25 @@ describe("追分对局", () => {
     expect(corrected.scoreEvents[0]).toMatchObject({ type: "correction", correctsEventId: scored.scoreEvents[0].id, note: "记错玩家" });
     expect(corrected.scoreEvents[1]).toEqual(scored.scoreEvents[0]);
     expect(correctScoreEvent(corrected, scored.scoreEvents[0].id, "重复", 400)).toBe(corrected);
+  });
+
+  it("计分备注与补录均进入不可变流水", () => {
+    const match = createMatch(draft, 100, first);
+    const scored = applyScore(match, "normal-win", match.players[0].id, 200, "翻中袋");
+    expect(scored.scoreEvents[0].note).toBe("翻中袋");
+    const backfilled = backfillScoreEvent(scored, match.players[1].id, -8, "漏记犯规", "第二局", 150);
+    expect(backfilled.players[1].score).toBe(92);
+    expect(backfilled.scoreEvents[0]).toMatchObject({ label: "补录 · 漏记犯规", note: "第二局", occurredAt: 150 });
+  });
+
+  it("结束局只有显式受控模式才允许追加更正", () => {
+    const started = createMatch(draft, 100, first);
+    const match = applyScore(started, "normal-win", started.players[0].id, 200);
+    const completed = finishMatch(match, 300);
+    expect(correctScoreEvent(completed, completed.scoreEvents[0].id, "普通尝试", 400)).toBe(completed);
+    const corrected = correctScoreEvent(completed, completed.scoreEvents[0].id, "受控纠错", 400, true);
+    expect(corrected.status).toBe("completed");
+    expect(corrected.scoreEvents[0]).toMatchObject({ type: "correction", note: "受控纠错" });
   });
 
   it("结算后保存确定排名", () => {

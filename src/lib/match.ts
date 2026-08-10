@@ -185,7 +185,7 @@ export function nextPlayerId(match: BilliardsMatch, fromId = match.currentPlayer
   return active[(index + 1 + active.length) % active.length].id;
 }
 
-export function applyScore(match: BilliardsMatch, ruleId: string, playerId: string, now = Date.now()): BilliardsMatch {
+export function applyScore(match: BilliardsMatch, ruleId: string, playerId: string, now = Date.now(), note = ""): BilliardsMatch {
   const rule = match.rules.find((item) => item.id === ruleId && item.enabled);
   const player = match.players.find((item) => item.id === playerId && item.active);
   if (!rule || !player || match.status !== "active") return match;
@@ -198,11 +198,34 @@ export function applyScore(match: BilliardsMatch, ruleId: string, playerId: stri
     changes: { [playerId]: delta },
     previousCurrentPlayerId: match.currentPlayerId,
     occurredAt: now,
+    ...(note.trim() ? { note: note.trim() } : {}),
   };
   return {
     ...match,
     players: match.players.map((item) => item.id === playerId ? { ...item, score: item.score + delta } : item),
     currentPlayerId: (match.turnStrategy ?? "fixed") === "winner_stays" && delta > 0 ? playerId : nextPlayerId(match),
+    scoreEvents: [event, ...match.scoreEvents],
+  };
+}
+
+export function backfillScoreEvent(match: BilliardsMatch, playerId: string, delta: number, label: string, note = "", occurredAt = Date.now()): BilliardsMatch {
+  const player = match.players.find((item) => item.id === playerId);
+  const value = Math.trunc(delta);
+  const cleanLabel = label.trim();
+  if (match.status !== "active" || !player || !value || !cleanLabel) return match;
+  const event: ScoreEvent = {
+    id: makeId("backfill", occurredAt),
+    type: "score",
+    label: `补录 · ${cleanLabel}`,
+    playerId,
+    changes: { [playerId]: value },
+    previousCurrentPlayerId: match.currentPlayerId,
+    occurredAt,
+    note: note.trim() || "赛后补录",
+  };
+  return {
+    ...match,
+    players: match.players.map((item) => item.id === playerId ? { ...item, score: item.score + value } : item),
     scoreEvents: [event, ...match.scoreEvents],
   };
 }
@@ -233,9 +256,9 @@ export function applyTransferScore(match: BilliardsMatch, winnerId: string, lose
   };
 }
 
-export function correctScoreEvent(match: BilliardsMatch, eventId: string, note: string, now = Date.now()): BilliardsMatch {
+export function correctScoreEvent(match: BilliardsMatch, eventId: string, note: string, now = Date.now(), allowCompleted = false): BilliardsMatch {
   const original = match.scoreEvents.find((event) => event.id === eventId && event.type !== "correction");
-  if (!original || match.status !== "active" || match.scoreEvents.some((event) => event.correctsEventId === eventId)) return match;
+  if (!original || (match.status !== "active" && !allowCompleted) || match.scoreEvents.some((event) => event.correctsEventId === eventId)) return match;
   const changes = Object.fromEntries(Object.entries(original.changes).map(([playerId, value]) => [playerId, -value]));
   const correction: ScoreEvent = { id: makeId("correction", now), type: "correction", label: `更正 · ${original.label}`, playerId: original.playerId, changes, previousCurrentPlayerId: match.currentPlayerId, occurredAt: now, correctsEventId: original.id, note: note.trim() || "撤销错误事件" };
   return { ...match, players: match.players.map((player) => ({ ...player, score: player.score + (changes[player.id] ?? 0) })), scoreEvents: [correction, ...match.scoreEvents] };
