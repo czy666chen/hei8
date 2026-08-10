@@ -7,6 +7,25 @@ export interface CardDefinition {
   safetyNote?: string;
 }
 
+export type CardCategory = "strategy" | "social" | "physical" | "chaos";
+export type CardSafetyLevel = "low" | "medium" | "review";
+
+const SOCIAL_PATTERN = /红包|朋友圈|红牛|夸奖|问一句|掰手腕|场外选手|微信|表白/;
+const STRATEGY_PATTERN = /球权|自由球|开球权|花色球|目标球|进球袋口|黑8|移除|贴库|连杆|犯规|反弹|无效/;
+
+export function getCardCategory(cardDefinition: CardDefinition): CardCategory {
+  if (cardDefinition.safetyNote) return "physical";
+  if (SOCIAL_PATTERN.test(`${cardDefinition.title}${cardDefinition.effect}`)) return "social";
+  if (STRATEGY_PATTERN.test(`${cardDefinition.title}${cardDefinition.effect}`)) return "strategy";
+  return "chaos";
+}
+
+export function getCardSafetyLevel(cardDefinition: CardDefinition): CardSafetyLevel {
+  if (cardDefinition.needsReview) return "review";
+  if (cardDefinition.safetyNote) return "medium";
+  return "low";
+}
+
 const card = (
   id: number,
   title: string,
