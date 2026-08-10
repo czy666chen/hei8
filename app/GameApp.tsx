@@ -7,6 +7,7 @@ import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId 
 import {
   addMatchPlayer,
   applyScore,
+  applyTransferScore,
   BilliardsMatch,
   CardMode,
   createMatch,
@@ -319,10 +320,14 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
   );
 }
 
-function ScoreBoard({ match, onScore, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string) => void; onUndo: () => void }) {
+function ScoreBoard({ match, onScore, onTransfer, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string) => void; onTransfer: (winnerId: string, loserIds: string[], amount: number, note: string) => void; onUndo: () => void }) {
   const rankings = getRankings(match).filter((player) => player.active);
   const current = match.players.find((player) => player.id === match.currentPlayerId) ?? match.players[0];
   const [manualSelectedId, setManualSelectedId] = useState<string | null>(null);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferAmount, setTransferAmount] = useState(10);
+  const [transferLosers, setTransferLosers] = useState<string[]>([]);
+  const [transferNote, setTransferNote] = useState("");
   const selectedId = manualSelectedId && match.players.some((player) => player.id === manualSelectedId)
     ? manualSelectedId
     : current.id;
@@ -346,12 +351,13 @@ function ScoreBoard({ match, onScore, onUndo }: { match: BilliardsMatch; onScore
             <button key={rule.id} className={rule.color} onClick={() => { onScore(rule.id, selectedId); setManualSelectedId(null); }}><span>{rule.kind === "penalty" ? "−" : "+"}{rule.value}</span><b>{rule.label}</b></button>
           ))}
         </div>
+        <div className="transfer-entry"><button className="text-button" onClick={() => setTransferOpen(!transferOpen)}>⇄ {transferOpen ? "收起转账计分" : "转账计分"}</button>{transferOpen && <div className="transfer-panel"><header><b>获胜者：{match.players.find((player) => player.id === selectedId)?.name}</b><small>每名所选输家支付同样分数，总分保持不变</small></header><div className="transfer-losers">{rankings.filter((player) => player.id !== selectedId).map((player) => <label key={player.id}><input type="checkbox" checked={transferLosers.includes(player.id)} onChange={(event) => setTransferLosers(event.target.checked ? [...transferLosers, player.id] : transferLosers.filter((id) => id !== player.id))} />{player.name}</label>)}</div><div className="transfer-fields"><label><span>每人支付</span><input aria-label="每名输家支付分数" type="number" min="1" inputMode="numeric" value={transferAmount} onChange={(event) => setTransferAmount(Number(event.target.value))} /></label><label><span>备注</span><input aria-label="转账计分备注" maxLength={80} placeholder="可选" value={transferNote} onChange={(event) => setTransferNote(event.target.value)} /></label><button disabled={!transferLosers.length || transferAmount <= 0} onClick={() => { onTransfer(selectedId, transferLosers, transferAmount, transferNote); setTransferLosers([]); setTransferNote(""); setManualSelectedId(null); setTransferOpen(false); }}>确认转账</button></div></div>}</div>
         <div className="ledger-preview">
           <div className="subheading"><b>最近流水</b><small>{match.scoreEvents.length} 笔</small></div>
           {match.scoreEvents.length ? match.scoreEvents.slice(0, 5).map((event) => {
             const player = match.players.find((item) => item.id === event.playerId);
             const delta = event.changes[event.playerId] ?? 0;
-            return <div className="ledger-row" key={event.id}><span className={delta < 0 ? "negative" : "positive"}>{delta > 0 ? "+" : ""}{delta}</span><div><b>{player?.name} · {event.label}</b><small>{formatTime(event.occurredAt)}</small></div></div>;
+            return <div className="ledger-row" key={event.id}><span className={delta < 0 ? "negative" : "positive"}>{delta > 0 ? "+" : ""}{delta}</span><div><b>{player?.name} · {event.label}</b><small>{event.note ? `${event.note} · ` : ""}{formatTime(event.occurredAt)}</small></div></div>;
           }) : <div className="empty-row">记下第一笔得分后，完整原因会出现在这里。</div>}
         </div>
       </section>
@@ -425,7 +431,7 @@ function ActiveMatchView({ match, onChange, onFinish, toast }: { match: Billiard
         <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" onClick={onFinish}>结束对局</button></div>
       </section>
       {moreOpen && <><section className="match-info"><div><span>玩家顺序</span><b>{match.players.filter((player) => player.active).map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name} · {(match.turnStrategy ?? "fixed") === "fixed" ? "固定轮转" : "得分者继续"}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section><PlayerManager match={match} onChange={onChange} toast={toast} /></>}
-      {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
+      {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onTransfer={(winnerId, loserIds, amount, note) => { onChange(applyTransferScore(match, winnerId, loserIds, amount, note)); toast(`已记录转账：每名输家支付 ${amount} 分`); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
       {match.cards && <CardBoard match={match} onChange={onChange} toast={toast} />}
       <div className="match-dock"><button disabled={!match.scoreEvents.length} onClick={() => onChange(undoLastScore(match))}>↶<span>撤销</span></button><button className="dock-main" onClick={() => match.cards ? document.querySelector(".card-board")?.scrollIntoView({ behavior: "smooth" }) : document.querySelector(".scoring-panel")?.scrollIntoView({ behavior: "smooth" })}>{match.cards ? "抽牌" : "记分"}</button><button onClick={() => setMoreOpen(!moreOpen)}>•••<span>更多</span></button></div>
     </div>

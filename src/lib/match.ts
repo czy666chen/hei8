@@ -28,12 +28,14 @@ export interface ScoreRule {
 
 export interface ScoreEvent {
   id: string;
-  type: "score";
+  type: "score" | "transfer" | "correction";
   label: string;
   playerId: string;
   changes: Record<string, number>;
   previousCurrentPlayerId: string;
   occurredAt: number;
+  note?: string;
+  correctsEventId?: string;
 }
 
 export interface CardEvent {
@@ -199,6 +201,32 @@ export function applyScore(match: BilliardsMatch, ruleId: string, playerId: stri
     ...match,
     players: match.players.map((item) => item.id === playerId ? { ...item, score: item.score + delta } : item),
     currentPlayerId: (match.turnStrategy ?? "fixed") === "winner_stays" && delta > 0 ? playerId : nextPlayerId(match),
+    scoreEvents: [event, ...match.scoreEvents],
+  };
+}
+
+export function applyTransferScore(match: BilliardsMatch, winnerId: string, loserIds: string[], amount: number, note = "", now = Date.now()): BilliardsMatch {
+  const winner = match.players.find((player) => player.id === winnerId && player.active);
+  const uniqueLosers = Array.from(new Set(loserIds)).filter((id) => id !== winnerId);
+  const losers = uniqueLosers.map((id) => match.players.find((player) => player.id === id && player.active)).filter((player): player is MatchPlayer => !!player);
+  const value = Math.abs(Math.trunc(amount));
+  if (match.status !== "active" || !winner || !value || losers.length !== uniqueLosers.length || !losers.length) return match;
+  const changes: Record<string, number> = { [winnerId]: value * losers.length };
+  losers.forEach((loser) => { changes[loser.id] = -value; });
+  const event: ScoreEvent = {
+    id: makeId("transfer", now),
+    type: "transfer",
+    label: `转账 · 每人 ${value} 分`,
+    playerId: winnerId,
+    changes,
+    previousCurrentPlayerId: match.currentPlayerId,
+    occurredAt: now,
+    ...(note.trim() ? { note: note.trim() } : {}),
+  };
+  return {
+    ...match,
+    players: match.players.map((player) => ({ ...player, score: player.score + (changes[player.id] ?? 0) })),
+    currentPlayerId: (match.turnStrategy ?? "fixed") === "winner_stays" ? winnerId : nextPlayerId(match),
     scoreEvents: [event, ...match.scoreEvents],
   };
 }

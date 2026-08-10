@@ -86,6 +86,20 @@ test("R2 玩家可独立设分、中途加入、调整顺序并保留离场记�
   await expect(page.locator(".departed-list")).toContainText("60 分");
 });
 
+test("R2 转账计分由每名输家支付固定分数", async ({ page }) => {
+  await createScoreMatch(page, 3);
+  await page.getByRole("button", { name: "转账计分" }).click();
+  await page.getByRole("checkbox", { name: "玩家 B" }).check();
+  await page.getByRole("checkbox", { name: "玩家 C" }).check();
+  await page.getByLabel("每名输家支付分数").fill("10");
+  await page.getByLabel("转账计分备注").fill("两位输家各付 10");
+  await page.getByRole("button", { name: "确认转账" }).click();
+  await expect(page.locator(".ranking-grid button").filter({ hasText: "玩家 A" })).toContainText("20分");
+  await expect(page.locator(".ranking-grid button").filter({ hasText: "玩家 B" })).toContainText("-10分");
+  await expect(page.locator(".ranking-grid button").filter({ hasText: "玩家 C" })).toContainText("-10分");
+  await expect(page.locator(".ledger-row").first()).toContainText("两位输家各付 10");
+});
+
 test("损坏的本机数据不会被静默覆盖", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("billiards-club-assistant:v1", "{broken-json"));
   await page.goto("/");
