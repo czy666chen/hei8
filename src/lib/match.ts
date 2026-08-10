@@ -4,6 +4,7 @@ import { getOfficialDeck, OfficialDeckId } from "./official-decks";
 export type MatchMode = "cards" | "score" | "score_cards";
 export type CardMode = "none" | "shared" | "independent";
 export type ScoreRuleKind = "gain" | "penalty";
+export type TurnStrategy = "fixed" | "winner_stays";
 
 export interface MatchPlayer {
   id: string;
@@ -12,6 +13,8 @@ export interface MatchPlayer {
   initialScore: number;
   score: number;
   active: boolean;
+  joinedAt?: number;
+  leftAt?: number;
 }
 
 export interface ScoreRule {
@@ -72,6 +75,7 @@ export interface BilliardsMatch {
   rules: ScoreRule[];
   scoreEvents: ScoreEvent[];
   cards?: MatchCardState;
+  turnStrategy?: TurnStrategy;
 }
 
 export interface MatchDraft {
@@ -82,6 +86,8 @@ export interface MatchDraft {
   cardMode: CardMode;
   initialHandSize: number;
   deckId?: OfficialDeckId;
+  playerInitialScores?: number[];
+  turnStrategy?: TurnStrategy;
 }
 
 export const DEFAULT_RULES: ScoreRule[] = [
@@ -117,9 +123,10 @@ export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = s
     id: `player-${now}-${index + 1}`,
     name,
     kind: "guest" as const,
-    initialScore: draft.initialScore,
-    score: draft.initialScore,
+    initialScore: Number.isFinite(draft.playerInitialScores?.[index]) ? Math.trunc(draft.playerInitialScores![index]) : Math.trunc(draft.initialScore),
+    score: Number.isFinite(draft.playerInitialScores?.[index]) ? Math.trunc(draft.playerInitialScores![index]) : Math.trunc(draft.initialScore),
     active: true,
+    joinedAt: now,
   }));
   const mode = draft.mode;
   let cards: MatchCardState | undefined;
@@ -162,6 +169,7 @@ export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = s
     currentPlayerId: players[0].id,
     rules: draft.rules.map((rule) => ({ ...rule, value: Math.abs(Math.trunc(rule.value)) })),
     scoreEvents: [],
+    turnStrategy: draft.turnStrategy ?? "fixed",
     ...(cards ? { cards } : {}),
   };
 }
@@ -190,7 +198,7 @@ export function applyScore(match: BilliardsMatch, ruleId: string, playerId: stri
   return {
     ...match,
     players: match.players.map((item) => item.id === playerId ? { ...item, score: item.score + delta } : item),
-    currentPlayerId: nextPlayerId(match),
+    currentPlayerId: (match.turnStrategy ?? "fixed") === "winner_stays" && delta > 0 ? playerId : nextPlayerId(match),
     scoreEvents: [event, ...match.scoreEvents],
   };
 }
@@ -212,6 +220,54 @@ export function undoLastScore(match: BilliardsMatch): BilliardsMatch {
 export function reorderPlayers(match: BilliardsMatch, playerIds: string[]): BilliardsMatch {
   const positions = new Map(playerIds.map((id, index) => [id, index]));
   return { ...match, players: [...match.players].sort((a, b) => (positions.get(a.id) ?? 999) - (positions.get(b.id) ?? 999)) };
+}
+
+export function setCurrentPlayer(match: BilliardsMatch, playerId: string): BilliardsMatch {
+  if (match.status !== "active" || !match.players.some((player) => player.id === playerId && player.active)) return match;
+  return { ...match, currentPlayerId: playerId };
+}
+
+export function hasPlayerActivity(match: BilliardsMatch, playerId: string): boolean {
+  return match.scoreEvents.some((event) => event.playerId === playerId || Object.hasOwn(event.changes, playerId))
+    || !!match.cards?.events.some((event) => event.handId === playerId);
+}
+
+export function addMatchPlayer(match: BilliardsMatch, name: string, initialScore = 0, now = Date.now()): BilliardsMatch {
+  const normalizedName = name.trim();
+  if (match.status !== "active" || !normalizedName || match.players.filter((player) => player.active).length >= 8) return match;
+  const id = `player-${now}-${Math.random().toString(36).slice(2, 8)}`;
+  const score = Number.isFinite(initialScore) ? Math.trunc(initialScore) : 0;
+  const player: MatchPlayer = { id, name: normalizedName, kind: "guest", initialScore: score, score, active: true, joinedAt: now };
+  return {
+    ...match,
+    players: [...match.players, player],
+    ...(match.cards?.mode === "independent" ? { cards: { ...match.cards, hands: { ...match.cards.hands, [id]: [] } } } : {}),
+  };
+}
+
+export function leaveMatchPlayer(match: BilliardsMatch, playerId: string, now = Date.now()): BilliardsMatch {
+  const player = match.players.find((item) => item.id === playerId && item.active);
+  if (match.status !== "active" || !player || match.players.filter((item) => item.active).length <= 2) return match;
+  const nextId = nextPlayerId(match, playerId);
+  const updated = { ...match, players: match.players.map((item) => item.id === playerId ? { ...item, active: false, leftAt: now } : item) };
+  return { ...updated, currentPlayerId: match.currentPlayerId === playerId ? nextId : match.currentPlayerId };
+}
+
+export function deleteMatchPlayer(match: BilliardsMatch, playerId: string): BilliardsMatch {
+  const player = match.players.find((item) => item.id === playerId && item.active);
+  if (match.status !== "active" || !player || match.players.filter((item) => item.active).length <= 2 || hasPlayerActivity(match, playerId)) return match;
+  const nextId = nextPlayerId(match, playerId);
+  const players = match.players.filter((item) => item.id !== playerId);
+  const returnedCards = match.cards?.mode === "independent" ? (match.cards.hands[playerId] ?? []) : [];
+  const hands = match.cards?.mode === "independent"
+    ? Object.fromEntries(Object.entries(match.cards.hands).filter(([handId]) => handId !== playerId))
+    : match.cards?.hands;
+  return {
+    ...match,
+    players,
+    currentPlayerId: match.currentPlayerId === playerId ? nextId : match.currentPlayerId,
+    ...(match.cards && hands ? { cards: { ...match.cards, hands, remaining: [...returnedCards, ...match.cards.remaining] } } : {}),
+  };
 }
 
 export function finishMatch(match: BilliardsMatch, now = Date.now()): BilliardsMatch {

@@ -5,20 +5,27 @@ import { CARD_DEFINITIONS } from "../src/data/cards";
 import { GameState, loadGameState } from "../src/lib/deck";
 import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId } from "../src/lib/official-decks";
 import {
+  addMatchPlayer,
   applyScore,
   BilliardsMatch,
   CardMode,
   createMatch,
+  deleteMatchPlayer,
   DEFAULT_RULES,
   drawMatchCards,
   finishMatch,
   getRankings,
   isStoredMatch,
+  hasPlayerActivity,
+  leaveMatchPlayer,
   MatchDraft,
   MatchMode,
   playMatchCard,
+  reorderPlayers,
   ScoreRule,
+  setCurrentPlayer,
   skipMatchCard,
+  TurnStrategy,
   undoLastScore,
 } from "../src/lib/match";
 
@@ -204,6 +211,8 @@ function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart:
 function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMode: MatchMode; savedRules: ScoreRule[]; onClose: () => void; onStart: (draft: MatchDraft, savePreset: boolean) => void }) {
   const [names, setNames] = useState(["玩家 A", "玩家 B"]);
   const [initialScore, setInitialScore] = useState(0);
+  const [playerScores, setPlayerScores] = useState([0, 0]);
+  const [turnStrategy, setTurnStrategy] = useState<TurnStrategy>("fixed");
   const [rules, setRules] = useState(savedRules.map((rule) => ({ ...rule })));
   const [cardMode, setCardMode] = useState<CardMode>(initialMode === "score" ? "none" : "shared");
   const [handSize, setHandSize] = useState(3);
@@ -213,23 +222,28 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
   const scoreEnabled = initialMode !== "cards";
   const selectedDeck = getOfficialDeck(deckId);
   const selectedDeckCount = officialDeckCardCount(selectedDeck);
-  const validNames = names.map((name) => name.trim()).filter(Boolean);
-  const valid = validNames.length >= 2 && validNames.length <= 8 && rules.every((rule) => Number.isFinite(rule.value) && rule.value >= 0);
+  const validPlayers = names.map((name, index) => ({ name: name.trim(), initialScore: playerScores[index] ?? initialScore })).filter((player) => player.name);
+  const validNames = validPlayers.map((player) => player.name);
+  const valid = validNames.length >= 2 && validNames.length <= 8 && validPlayers.every((player) => Number.isFinite(player.initialScore)) && rules.every((rule) => Number.isFinite(rule.value) && rule.value >= 0);
 
   const updateName = (index: number, value: string) => setNames(names.map((name, itemIndex) => itemIndex === index ? value : name));
+  const updatePlayerScore = (index: number, value: number) => setPlayerScores(playerScores.map((score, itemIndex) => itemIndex === index ? value : score));
   const updateRule = (id: string, patch: Partial<ScoreRule>) => setRules(rules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule));
   const shufflePlayers = () => {
-    const shuffled = [...names];
+    const shuffled = names.map((name, index) => ({ name, score: playerScores[index] ?? initialScore }));
     for (let index = shuffled.length - 1; index > 0; index -= 1) {
       const selected = Math.floor(Math.random() * (index + 1));
       [shuffled[index], shuffled[selected]] = [shuffled[selected], shuffled[index]];
     }
-    setNames(shuffled);
+    setNames(shuffled.map((player) => player.name));
+    setPlayerScores(shuffled.map((player) => player.score));
   };
   const submit = () => onStart({
     mode: initialMode === "cards" ? "cards" : cardMode === "none" ? "score" : "score_cards",
     playerNames: validNames,
     initialScore,
+    playerInitialScores: validPlayers.map((player) => player.initialScore),
+    turnStrategy,
     rules,
     cardMode: initialMode === "cards" && cardMode === "none" ? "shared" : cardMode,
     initialHandSize: cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize,
@@ -250,9 +264,9 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
               <div className="setup-title"><span>01</span><div><b>添加玩家</b><small>支持 2–8 名临时玩家，无需注册</small></div></div>
               <div className="player-inputs">
                 {names.map((name, index) => (
-                  <label key={index}><span>{index + 1}</span><input aria-label={`玩家 ${index + 1} 昵称`} value={name} maxLength={12} onChange={(event) => updateName(index, event.target.value)} />{names.length > 2 && <button onClick={() => setNames(names.filter((_, itemIndex) => itemIndex !== index))} aria-label={`删除玩家 ${index + 1}`}>×</button>}</label>
+                  <label key={index} className="player-input"><span>{index + 1}</span><input className="player-name-input" aria-label={`玩家 ${index + 1} 昵称`} value={name} maxLength={12} onChange={(event) => updateName(index, event.target.value)} /><input className="player-score-input" aria-label={`${name || `玩家 ${index + 1}`}初始积分`} type="number" inputMode="numeric" value={playerScores[index] ?? initialScore} onChange={(event) => updatePlayerScore(index, Number(event.target.value))} />{names.length > 2 && <button onClick={() => { setNames(names.filter((_, itemIndex) => itemIndex !== index)); setPlayerScores(playerScores.filter((_, itemIndex) => itemIndex !== index)); }} aria-label={`删除玩家 ${index + 1}`}>×</button>}</label>
                 ))}
-                {names.length < 8 && <button className="add-player" onClick={() => setNames([...names, `玩家 ${String.fromCharCode(65 + names.length)}`])}>＋ 添加临时玩家</button>}
+                {names.length < 8 && <button className="add-player" onClick={() => { setNames([...names, `玩家 ${String.fromCharCode(65 + names.length)}`]); setPlayerScores([...playerScores, initialScore]); }}>＋ 添加临时玩家</button>}
                 <button className="add-player" onClick={shufflePlayers}>⤨ 随机排列顺序</button>
                 <button className="registered-entry" disabled title="账户功能将在云同步阶段开放">○ 添加注册玩家 <small>即将开放</small></button>
               </div>
@@ -261,7 +275,8 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
             {scoreEnabled && (
               <section className="setup-section">
                 <div className="setup-title"><span>02</span><div><b>计分规则</b><small>所有分值都可修改</small></div></div>
-                <label className="initial-score"><span>每人初始积分</span><input type="number" inputMode="numeric" value={initialScore} onChange={(event) => setInitialScore(Number(event.target.value))} /></label>
+                <label className="initial-score"><span>统一设置初始积分</span><input type="number" inputMode="numeric" value={initialScore} onChange={(event) => { const value = Number(event.target.value); setInitialScore(value); setPlayerScores(playerScores.map(() => value)); }} /><small>可在玩家姓名右侧单独调整</small></label>
+                <div className="turn-strategy"><span>击球顺序</span><div className="segmented"><button className={turnStrategy === "fixed" ? "active" : ""} onClick={() => setTurnStrategy("fixed")}>固定轮转</button><button className={turnStrategy === "winner_stays" ? "active" : ""} onClick={() => setTurnStrategy("winner_stays")}>得分者继续</button></div></div>
                 <div className="rule-editor">
                   {rules.map((rule) => (
                     <label key={rule.id} className={!rule.enabled ? "disabled" : ""}>
@@ -288,8 +303,8 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
           </div>
         ) : (
           <div className="review-card">
-            <div><span>玩家与顺序</span><b>{validNames.map((name, index) => `${index + 1}. ${name}`).join("　")}</b></div>
-            {scoreEnabled && <><div><span>初始积分</span><b>{initialScore} 分 / 人</b></div><div><span>计分项目</span><b>{rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ")}</b></div></>}
+            <div><span>玩家与顺序</span><b>{validPlayers.map((player, index) => `${index + 1}. ${player.name}${scoreEnabled ? `（${player.initialScore} 分）` : ""}`).join("　")}</b></div>
+            {scoreEnabled && <><div><span>击球顺序</span><b>{turnStrategy === "fixed" ? "固定轮转" : "得分者继续，犯规后轮转"}</b></div><div><span>计分项目</span><b>{rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ")}</b></div></>}
             <div><span>奇招牌</span><b>{cardMode === "none" ? "不启用" : `${selectedDeck.name} V${selectedDeck.version} · ${selectedDeckCount} 张快照 · ${cardMode === "shared" ? "共用手牌" : "独立手牌"} · 起始 ${cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize} 张`}</b></div>
             <aside className="safety-callout"><span>✓</span><p><b>规则快照将在开局时保存</b>后续修改默认规则，不会影响本场对局记录。</p></aside>
           </div>
@@ -305,7 +320,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
 }
 
 function ScoreBoard({ match, onScore, onUndo }: { match: BilliardsMatch; onScore: (ruleId: string, playerId: string) => void; onUndo: () => void }) {
-  const rankings = getRankings(match);
+  const rankings = getRankings(match).filter((player) => player.active);
   const current = match.players.find((player) => player.id === match.currentPlayerId) ?? match.players[0];
   const [manualSelectedId, setManualSelectedId] = useState<string | null>(null);
   const selectedId = manualSelectedId && match.players.some((player) => player.id === manualSelectedId)
@@ -346,7 +361,7 @@ function ScoreBoard({ match, onScore, onUndo }: { match: BilliardsMatch; onScore
 
 function CardBoard({ match, onChange, toast }: { match: BilliardsMatch; onChange: (match: BilliardsMatch) => void; toast: (message: string) => void }) {
   const cards = match.cards!;
-  const handIds = Object.keys(cards.hands);
+  const handIds = Object.keys(cards.hands).filter((id) => id === "shared" || match.players.some((player) => player.id === id && player.active));
   const [handId, setHandId] = useState(handIds[0]);
   const activeHand = cards.hands[handId] ? handId : handIds[0];
   const label = activeHand === "shared" ? "共用手牌" : match.players.find((player) => player.id === activeHand)?.name ?? "玩家手牌";
@@ -375,18 +390,41 @@ function CardBoard({ match, onChange, toast }: { match: BilliardsMatch; onChange
   );
 }
 
+function PlayerManager({ match, onChange, toast }: { match: BilliardsMatch; onChange: (match: BilliardsMatch) => void; toast: (message: string) => void }) {
+  const [name, setName] = useState("");
+  const [initialScore, setInitialScore] = useState(0);
+  const activePlayers = match.players.filter((player) => player.active);
+  const departedPlayers = match.players.filter((player) => !player.active);
+  const move = (playerId: string, direction: -1 | 1) => {
+    const ids = activePlayers.map((player) => player.id);
+    const index = ids.indexOf(playerId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    onChange(reorderPlayers(match, ids));
+  };
+  const add = () => {
+    const updated = addMatchPlayer(match, name, initialScore);
+    if (updated === match) return;
+    onChange(updated);
+    setName("");
+    toast("已添加中途加入玩家；独立手牌模式下从空手牌开始");
+  };
+  return <section className="player-manager" aria-label="玩家管理"><header><div><p className="kicker">PLAYER CONTROL</p><h2>玩家与击球顺序</h2></div><div className="segmented strategy-switch"><button className={(match.turnStrategy ?? "fixed") === "fixed" ? "active" : ""} onClick={() => onChange({ ...match, turnStrategy: "fixed" })}>固定轮转</button><button className={match.turnStrategy === "winner_stays" ? "active" : ""} onClick={() => onChange({ ...match, turnStrategy: "winner_stays" })}>得分者继续</button></div></header><div className="manager-list">{activePlayers.map((player, index) => { const activity = hasPlayerActivity(match, player.id); return <article key={player.id} className={player.id === match.currentPlayerId ? "current" : ""}><span className="manager-order">{index + 1}</span><div><b>{player.name}</b><small>{player.id === match.currentPlayerId ? "当前击球" : `加入 ${formatTime(player.joinedAt ?? match.startedAt)}`} · {player.score} 分</small></div><div className="manager-actions"><button disabled={index === 0} onClick={() => move(player.id, -1)} aria-label={`${player.name}上移`}>↑</button><button disabled={index === activePlayers.length - 1} onClick={() => move(player.id, 1)} aria-label={`${player.name}下移`}>↓</button><button className="current-button" disabled={player.id === match.currentPlayerId} onClick={() => onChange(setCurrentPlayer(match, player.id))}>设为当前</button>{activity ? <button className="leave-button" disabled={activePlayers.length <= 2} onClick={() => { onChange(leaveMatchPlayer(match, player.id)); toast(`${player.name} 已离场，历史和最终分数已保留`); }}>离场</button> : <button className="leave-button" disabled={activePlayers.length <= 2} onClick={() => { onChange(deleteMatchPlayer(match, player.id)); toast(`${player.name} 尚无流水，已安全移除`); }}>移除</button>}</div></article>; })}</div>{!!departedPlayers.length && <details className="departed-list"><summary>已离场玩家 <span>{departedPlayers.length}</span></summary>{departedPlayers.map((player) => <div key={player.id}><b>{player.name}</b><small>{player.score} 分 · {player.leftAt ? formatTime(player.leftAt) : "已离场"}</small></div>)}</details>}<div className="mid-match-add"><input aria-label="中途加入玩家昵称" placeholder="新玩家昵称" maxLength={12} value={name} onChange={(event) => setName(event.target.value)} />{match.mode !== "cards" && <input aria-label="中途加入玩家初始积分" type="number" inputMode="numeric" value={initialScore} onChange={(event) => setInitialScore(Number(event.target.value))} />}<button disabled={!name.trim() || activePlayers.length >= 8} onClick={add}>＋ 中途加入</button></div></section>;
+}
+
 function ActiveMatchView({ match, onChange, onFinish, toast }: { match: BilliardsMatch; onChange: (match: BilliardsMatch) => void; onFinish: () => void; toast: (message: string) => void }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [, tick] = useState(0);
   useEffect(() => { const timer = window.setInterval(() => tick((value) => value + 1), 60000); return () => window.clearInterval(timer); }, []);
-  const current = match.players.find((player) => player.id === match.currentPlayerId) ?? match.players[0];
+  const current = match.players.find((player) => player.id === match.currentPlayerId && player.active) ?? match.players.find((player) => player.active) ?? match.players[0];
   return (
     <div className="match-page page-shell">
       <section className="match-banner">
-        <div><span className="live-label"><i /> 对局进行中</span><h1>{match.mode === "cards" ? "奇招卡牌局" : match.mode === "score_cards" ? "追分 · 奇招牌" : "多人追分"}</h1><p>{match.players.length} 位玩家 · {formatDuration(match.startedAt)}{match.cards ? ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"}` : ""}</p></div>
+        <div><span className="live-label"><i /> 对局进行中</span><h1>{match.mode === "cards" ? "奇招卡牌局" : match.mode === "score_cards" ? "追分 · 奇招牌" : "多人追分"}</h1><p>{match.players.filter((player) => player.active).length} 位在场 · {formatDuration(match.startedAt)}{match.cards ? ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"}` : ""}</p></div>
         <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" onClick={onFinish}>结束对局</button></div>
       </section>
-      {moreOpen && <section className="match-info"><div><span>玩家顺序</span><b>{match.players.map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section>}
+      {moreOpen && <><section className="match-info"><div><span>玩家顺序</span><b>{match.players.filter((player) => player.active).map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name} · {(match.turnStrategy ?? "fixed") === "fixed" ? "固定轮转" : "得分者继续"}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section><PlayerManager match={match} onChange={onChange} toast={toast} /></>}
       {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
       {match.cards && <CardBoard match={match} onChange={onChange} toast={toast} />}
       <div className="match-dock"><button disabled={!match.scoreEvents.length} onClick={() => onChange(undoLastScore(match))}>↶<span>撤销</span></button><button className="dock-main" onClick={() => match.cards ? document.querySelector(".card-board")?.scrollIntoView({ behavior: "smooth" }) : document.querySelector(".scoring-panel")?.scrollIntoView({ behavior: "smooth" })}>{match.cards ? "抽牌" : "记分"}</button><button onClick={() => setMoreOpen(!moreOpen)}>•••<span>更多</span></button></div>

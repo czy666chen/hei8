@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  addMatchPlayer,
   applyScore,
   createMatch,
+  deleteMatchPlayer,
   DEFAULT_RULES,
   drawMatchCards,
   finishMatch,
   getRankings,
+  hasPlayerActivity,
+  leaveMatchPlayer,
   playMatchCard,
   skipMatchCard,
+  setCurrentPlayer,
   undoLastScore,
 } from "./match";
 
@@ -41,6 +46,35 @@ describe("追分对局", () => {
     expect(scored.players[0].score).toBe(110);
     expect(scored.currentPlayerId).toBe(match.players[1].id);
     expect(scored.scoreEvents[0].changes[match.players[0].id]).toBe(10);
+  });
+
+  it("支持每名玩家独立初始分与得分者继续策略", () => {
+    const match = createMatch({ ...draft, playerInitialScores: [10, 20, 30], turnStrategy: "winner_stays" }, 100, first);
+    expect(match.players.map((player) => player.score)).toEqual([10, 20, 30]);
+    const scored = applyScore(match, "normal-win", match.players[1].id, 200);
+    expect(scored.currentPlayerId).toBe(match.players[1].id);
+  });
+
+  it("中途加入、手动切换与离场均保留稳定玩家历史", () => {
+    const match = createMatch(draft, 100, first);
+    const added = addMatchPlayer(match, "新玩家", 50, 200);
+    const newcomer = added.players.at(-1)!;
+    expect(newcomer).toMatchObject({ name: "新玩家", score: 50, joinedAt: 200, active: true });
+    const selected = setCurrentPlayer(added, newcomer.id);
+    expect(selected.currentPlayerId).toBe(newcomer.id);
+    const left = leaveMatchPlayer(selected, newcomer.id, 300);
+    expect(left.players.find((player) => player.id === newcomer.id)).toMatchObject({ active: false, leftAt: 300, score: 50 });
+  });
+
+  it("无流水玩家可删除，产生流水后只能离场", () => {
+    const match = createMatch(draft, 100, first);
+    const added = addMatchPlayer(match, "临时", 0, 200);
+    const newcomer = added.players.at(-1)!;
+    expect(deleteMatchPlayer(added, newcomer.id).players.some((player) => player.id === newcomer.id)).toBe(false);
+    const scored = applyScore(added, "normal-win", newcomer.id, 300);
+    expect(hasPlayerActivity(scored, newcomer.id)).toBe(true);
+    expect(deleteMatchPlayer(scored, newcomer.id)).toBe(scored);
+    expect(leaveMatchPlayer(scored, newcomer.id, 400).players.find((player) => player.id === newcomer.id)?.active).toBe(false);
   });
 
   it("犯规扣分且撤销同时恢复积分与当前玩家", () => {

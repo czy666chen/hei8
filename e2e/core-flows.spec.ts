@@ -64,6 +64,28 @@ test("未结束对局可保存后新建并恢复", async ({ page }) => {
   await expect(page.locator(".live-label")).toHaveText(/对局进行中/);
 });
 
+test("R2 玩家可独立设分、中途加入、调整顺序并保留离场记录", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /开始追分局/ }).click();
+  await page.getByLabel("玩家 B初始积分").fill("30");
+  await page.getByRole("button", { name: /添加临时玩家/ }).click();
+  await page.getByRole("button", { name: /下一步：确认规则/ }).click();
+  await page.getByRole("button", { name: /确认并开始/ }).click();
+  await expect(page.locator(".ranking-grid button").filter({ hasText: "玩家 B" })).toContainText("30分");
+  await page.getByRole("button", { name: "本局信息" }).click();
+  await page.getByLabel("中途加入玩家昵称").fill("新手");
+  await page.getByLabel("中途加入玩家初始积分").fill("50");
+  await page.getByRole("button", { name: /中途加入/ }).click();
+  const newcomer = page.locator(".manager-list article").filter({ hasText: "新手" });
+  await expect(newcomer).toContainText("50 分");
+  await newcomer.getByRole("button", { name: "新手上移" }).click();
+  await newcomer.getByRole("button", { name: "设为当前" }).click();
+  await page.locator(".score-actions button").filter({ hasText: "普胜" }).click();
+  await newcomer.getByRole("button", { name: "离场" }).click();
+  await expect(page.locator(".departed-list")).toContainText("新手");
+  await expect(page.locator(".departed-list")).toContainText("60 分");
+});
+
 test("损坏的本机数据不会被静默覆盖", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("billiards-club-assistant:v1", "{broken-json"));
   await page.goto("/");

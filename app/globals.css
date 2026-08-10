@@ -32,6 +32,31 @@
 .protection-actions button { min-height: 46px; }
 .danger-text { color: var(--red); }
 .audit-note { display: block; margin-top: 12px; color: var(--gold); line-height: 1.5; }
+.player-inputs .player-input { grid-template-columns: 30px 1fr 84px 30px; }
+.player-score-input { min-width: 0; padding: 0 8px; border-left: 1px solid var(--line) !important; text-align: right; color: var(--gold) !important; }
+.turn-strategy { display: grid; grid-template-columns: 130px 1fr; gap: 12px; align-items: center; margin: 12px 0 18px; color: var(--muted); font-size: 11px; }
+.turn-strategy .segmented, .strategy-switch { grid-template-columns: repeat(2, 1fr); }
+.player-manager { margin-top: 10px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: #0b1712; }
+.player-manager > header { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin-bottom: 14px; }
+.player-manager h2 { margin: 0; font-size: 18px; }
+.strategy-switch { width: min(300px, 45vw); }
+.manager-list { display: grid; gap: 7px; }
+.manager-list article { display: grid; grid-template-columns: 28px minmax(110px, 1fr) auto; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: #101e18; }
+.manager-list article.current { border-color: var(--mint); }
+.manager-order { display: grid; width: 26px; height: 26px; place-items: center; border-radius: 50%; color: #07100d; background: var(--mint); font: 700 11px "Oswald"; }
+.manager-list article > div:nth-child(2) { display: grid; gap: 3px; }
+.manager-list small { color: var(--muted); font-size: 9px; }
+.manager-actions { display: flex; gap: 5px; }
+.manager-actions button { min-height: 32px; padding: 0 9px; border: 1px solid #365044; border-radius: 5px; background: #14261e; font-size: 9px; font-weight: 700; }
+.manager-actions .current-button { color: var(--mint); }
+.manager-actions .leave-button { color: var(--red); }
+.mid-match-add { display: grid; grid-template-columns: 1fr 110px auto; gap: 7px; margin-top: 12px; }
+.mid-match-add input { min-height: 40px; padding: 0 10px; border: 1px solid #365044; border-radius: 6px; color: var(--text); background: #0e1b16; }
+.mid-match-add button { min-height: 40px; padding: 0 14px; border-radius: 6px; color: #07100d; background: var(--mint); font-weight: 800; }
+.departed-list { margin-top: 10px; border-top: 1px solid var(--line-soft); }
+.departed-list summary { padding: 10px 0; color: var(--muted); cursor: pointer; font-size: 10px; }
+.departed-list summary span { float: right; }
+.departed-list > div { display: flex; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 10px; }
 .official-deck-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 30px; }
 .official-deck-grid .official-deck { grid-template-columns: 100px 1fr; margin-bottom: 0; padding: 20px; }
 .official-deck-grid .official-art { height: 120px; }
@@ -48,6 +73,15 @@
 @media (max-width: 620px) {
   .deck-picker, .paused-matches { grid-template-columns: 1fr; }
   .paused-matches > div { grid-column: auto; }
+  .player-inputs .player-input { grid-template-columns: 30px 1fr 72px 30px; }
+  .turn-strategy { grid-template-columns: 1fr; }
+  .player-manager { padding: 14px 10px; }
+  .player-manager > header { display: grid; }
+  .strategy-switch { width: 100%; }
+  .manager-list article { grid-template-columns: 26px 1fr; }
+  .manager-actions { grid-column: 1 / -1; display: grid; grid-template-columns: 36px 36px 1fr 1fr; }
+  .mid-match-add { grid-template-columns: 1fr 86px; }
+  .mid-match-add button { grid-column: 1 / -1; }
 }
 
 * { box-sizing: border-box; }
