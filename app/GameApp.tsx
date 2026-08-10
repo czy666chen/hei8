@@ -21,6 +21,7 @@ import {
   drawMatchCards,
   DeckExhaustionPolicy,
   finishMatch,
+  getPlayerAvatarColor,
   getRankings,
   isStoredMatch,
   hasPlayerActivity,
@@ -42,7 +43,7 @@ import {
 const APP_STORAGE_KEY = "billiards-club-assistant:v1";
 const CARD_STORAGE_KEY = "billiards-trick-cards:v2";
 const LEGACY_CARD_STORAGE_KEY = "neon-pool-cards:v1";
-const APP_VERSION = "4.0.0";
+const APP_VERSION = "4.0.1";
 
 type AppData = {
   version: 1;
@@ -55,6 +56,8 @@ type AppData = {
 };
 
 type ScorePreset = { id: string; name: string; rules: ScoreRule[] };
+
+const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
 
 type StorageIssue = { message: string; raw: string };
 
@@ -224,12 +227,27 @@ function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart:
   );
 }
 
+function ScoreValueInput({ rule, onValueChange }: { rule: ScoreRule; onValueChange: (value: number) => void }) {
+  const [draftValue, setDraftValue] = useState(String(rule.value));
+
+  return <input aria-label={`${rule.label}分值`} type="number" min="0" inputMode="numeric" value={draftValue} onChange={(event) => {
+    const next = event.target.value;
+    setDraftValue(next);
+    if (next !== "" && Number.isFinite(Number(next))) onValueChange(Number(next));
+  }} onBlur={() => {
+    if (draftValue === "") {
+      setDraftValue("0");
+      onValueChange(0);
+    }
+  }} />;
+}
+
 function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }: { initialMode: MatchMode; savedRules: ScoreRule[]; scorePresets: ScorePreset[]; onClose: () => void; onStart: (draft: MatchDraft, presets: ScorePreset[]) => void }) {
   const [names, setNames] = useState(["玩家 A", "玩家 B"]);
   const [initialScore, setInitialScore] = useState(0);
   const [playerScores, setPlayerScores] = useState([0, 0]);
   const [turnStrategy, setTurnStrategy] = useState<TurnStrategy>("fixed");
-  const [rules, setRules] = useState(savedRules.map((rule) => ({ ...rule })));
+  const [rules, setRules] = useState(DEFAULT_RULES.map((rule) => ({ ...rule })));
   const [cardMode, setCardMode] = useState<CardMode>(initialMode === "score" ? "none" : "shared");
   const [handSize, setHandSize] = useState(3);
   const [cardAutoDrawPolicy, setCardAutoDrawPolicy] = useState<AutoDrawPolicy>("manual");
@@ -242,9 +260,10 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
   const [reviewing, setReviewing] = useState(false);
   const [savePreset, setSavePreset] = useState(false);
   const [presets, setPresets] = useState(scorePresets.map((preset) => ({ ...preset, rules: preset.rules.map((rule) => ({ ...rule })) })));
-  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState(DEFAULT_SCORE_PRESET_ID);
   const [presetName, setPresetName] = useState("");
   const [newPresetId] = useState(() => `preset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const selectedCustomPreset = presets.find((preset) => preset.id === selectedPresetId);
   const scoreEnabled = initialMode !== "cards";
   const selectedDeck = getOfficialDeck(deckId);
   const selectedDeckCount = officialDeckCardCount(selectedDeck);
@@ -269,10 +288,19 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
   const loadPreset = (id: string) => {
     const preset = presets.find((item) => item.id === id);
     setSelectedPresetId(id);
-    if (preset) { setRules(preset.rules.map((rule) => ({ ...rule }))); setPresetName(preset.name); }
+    if (id === DEFAULT_SCORE_PRESET_ID) {
+      setRules(DEFAULT_RULES.map((rule) => ({ ...rule })));
+      setPresetName("");
+    } else if (!id) {
+      setRules(savedRules.map((rule) => ({ ...rule })));
+      setPresetName("");
+    } else if (preset) {
+      setRules(preset.rules.map((rule) => ({ ...rule })));
+      setPresetName(preset.name);
+    }
   };
   const copyPreset = () => {
-    const source = presets.find((item) => item.id === selectedPresetId);
+    const source = selectedCustomPreset;
     if (!source) return;
     const copy = { id: `preset-${Date.now()}`, name: `${source.name} 副本`, rules: source.rules.map((rule) => ({ ...rule })) };
     setPresets([...presets, copy]);
@@ -282,15 +310,16 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
     setSavePreset(true);
   };
   const deletePreset = () => {
-    if (!selectedPresetId) return;
+    if (!selectedCustomPreset) return;
     setPresets(presets.filter((preset) => preset.id !== selectedPresetId));
     setSelectedPresetId("");
     setPresetName("");
-    setRules(savedRules.map((rule) => ({ ...rule })));
+    setRules(DEFAULT_RULES.map((rule) => ({ ...rule })));
+    setSelectedPresetId(DEFAULT_SCORE_PRESET_ID);
   };
   const submit = () => {
     const nextPresets = savePreset && presetName.trim()
-      ? selectedPresetId
+      ? selectedCustomPreset
         ? presets.map((preset) => preset.id === selectedPresetId ? { ...preset, name: presetName.trim(), rules: rules.map((rule) => ({ ...rule })) } : preset)
         : [...presets, { id: newPresetId, name: presetName.trim(), rules: rules.map((rule) => ({ ...rule })) }]
       : presets;
@@ -338,19 +367,19 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
                 <div className="setup-title"><span>02</span><div><b>计分规则</b><small>所有分值都可修改</small></div></div>
                 <label className="initial-score"><span>统一设置初始积分</span><input type="number" inputMode="numeric" value={initialScore} onChange={(event) => { const value = Number(event.target.value); setInitialScore(value); setPlayerScores(playerScores.map(() => value)); }} /><small>可在玩家姓名右侧单独调整</small></label>
                 <div className="turn-strategy"><span>击球顺序</span><div className="segmented"><button className={turnStrategy === "fixed" ? "active" : ""} onClick={() => setTurnStrategy("fixed")}>固定轮转</button><button className={turnStrategy === "winner_stays" ? "active" : ""} onClick={() => setTurnStrategy("winner_stays")}>得分者继续</button></div></div>
-                <div className="preset-manager"><select aria-label="计分预设" value={selectedPresetId} onChange={(event) => loadPreset(event.target.value)}><option value="">当前 / 默认规则</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" disabled={!selectedPresetId} onClick={copyPreset}>复制</button><button type="button" disabled={!selectedPresetId} onClick={deletePreset}>删除</button></div>
+                <div className="preset-manager"><select aria-label="计分预设" value={selectedPresetId} onChange={(event) => loadPreset(event.target.value)}><option value={DEFAULT_SCORE_PRESET_ID}>14710 标准（默认）</option><option value="">上次使用规则</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" disabled={!selectedCustomPreset} onClick={copyPreset}>复制</button><button type="button" disabled={!selectedCustomPreset} onClick={deletePreset}>删除</button></div>
                 <div className="rule-editor">
                   {rules.map((rule) => (
                     <label key={rule.id} className={!rule.enabled ? "disabled" : ""}>
                       <input type="checkbox" checked={rule.enabled} onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })} />
                       <span className={`rule-dot ${rule.color}`} /><input className="rule-name-input" aria-label={`${rule.label}名称`} value={rule.label} maxLength={12} onChange={(event) => updateRule(rule.id, { label: event.target.value })} /><select aria-label={`${rule.label}颜色`} value={rule.color} onChange={(event) => updateRule(rule.id, { color: event.target.value })}><option value="mint">绿色</option><option value="cyan">青色</option><option value="gold">金色</option><option value="violet">紫色</option><option value="red">红色</option></select><select aria-label={`${rule.label}类型`} value={rule.kind} onChange={(event) => updateRule(rule.id, { kind: event.target.value as "gain" | "penalty" })}><option value="gain">得分</option><option value="penalty">扣分</option></select>
-                      <input aria-label={`${rule.label}分值`} type="number" min="0" inputMode="numeric" value={rule.value} onChange={(event) => updateRule(rule.id, { value: Number(event.target.value) })} />
+                      <ScoreValueInput key={`${selectedPresetId}-${rule.id}`} rule={rule} onValueChange={(value) => updateRule(rule.id, { value })} />
                       <input className="rule-description-input" aria-label={`${rule.label}说明`} placeholder="计分说明（可选）" value={rule.description ?? ""} maxLength={40} onChange={(event) => updateRule(rule.id, { description: event.target.value })} /><span className="rule-order"><button type="button" onClick={() => moveRule(rule.id, -1)}>↑</button><button type="button" onClick={() => moveRule(rule.id, 1)}>↓</button>{rule.custom && <button type="button" onClick={() => setRules(rules.filter((item) => item.id !== rule.id))}>删除</button>}</span>
                     </label>
                   ))}
                 </div>
                 <button className="add-player add-score-rule" type="button" onClick={addCustomRule}>＋ 添加自定义计分项</button>
-                <div className="save-preset"><label><input type="checkbox" checked={savePreset} onChange={(event) => setSavePreset(event.target.checked)} /> {selectedPresetId ? "保存对当前预设的编辑" : "另存为命名预设"}</label>{savePreset && <input aria-label="计分预设名称" maxLength={24} placeholder="例如：周五俱乐部规则" value={presetName} onChange={(event) => setPresetName(event.target.value)} />}</div>
+                <div className="save-preset"><label><input type="checkbox" checked={savePreset} onChange={(event) => setSavePreset(event.target.checked)} /> {selectedCustomPreset ? "保存对当前预设的编辑" : "另存为命名预设"}</label>{savePreset && <input aria-label="计分预设名称" maxLength={24} placeholder="例如：周五俱乐部规则" value={presetName} onChange={(event) => setPresetName(event.target.value)} />}</div>
               </section>
             )}
 
@@ -411,7 +440,7 @@ function ScoreBoard({ match, onScore, onTransfer, onBackfill, onBlackGold, onHan
         <div className="ranking-grid">
           {rankings.map((player, index) => (
             <button key={player.id} className={`${selectedId === player.id ? "selected" : ""} ${player.id === match.currentPlayerId ? "current" : ""}`} onClick={() => setManualSelectedId(player.id === current.id ? null : player.id)}>
-              <span className="rank">{index + 1}</span><span className="avatar">{player.name.slice(0, 1)}</span><span className="player-copy"><b>{player.name}</b><small>{player.id === match.currentPlayerId ? "正在击球" : `较开局 ${player.score - player.initialScore >= 0 ? "+" : ""}${player.score - player.initialScore}`}</small></span><strong>{player.score}<small>分</small></strong>
+              <span className="rank">{index + 1}</span><span className={`avatar avatar-${getPlayerAvatarColor(player.id)}`}>{player.name.slice(0, 1)}</span><span className="player-copy"><b>{player.name}</b><small>{player.id === match.currentPlayerId ? "正在击球" : `较开局 ${player.score - player.initialScore >= 0 ? "+" : ""}${player.score - player.initialScore}`}</small></span><strong>{player.score}<small>分</small></strong>
             </button>
           ))}
         </div>

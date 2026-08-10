@@ -83,7 +83,7 @@ test("R2 玩家可独立设分、中途加入、调整顺序并保留离场记�
   await page.locator(".score-actions button").filter({ hasText: "普胜" }).click();
   await newcomer.getByRole("button", { name: "离场" }).click();
   await expect(page.locator(".departed-list")).toContainText("新手");
-  await expect(page.locator(".departed-list")).toContainText("60 分");
+  await expect(page.locator(".departed-list")).toContainText("54 分");
 });
 
 test("R2 转账计分由每名输家支付固定分数", async ({ page }) => {
@@ -127,6 +127,21 @@ test("R2 高级抽牌与牌分联动可撤销并进入统一历史", async ({ pa
   await expect(page.getByRole("heading", { name: "真实发生顺序" })).toBeVisible();
   await expect(page.locator(".timeline-row.unified.score")).toContainText("查看关联卡牌");
   await expect(page.locator(".timeline-row.unified.card").filter({ hasText: "查看关联积分" })).toBeVisible();
+});
+
+test("14710 默认预设允许清空分值后重新输入", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /开始追分局/ }).click();
+  await expect(page.getByLabel("计分预设")).toHaveValue("builtin-14710");
+  await expect(page.getByLabel("犯规分值")).toHaveValue("1");
+  await expect(page.getByLabel("普胜分值")).toHaveValue("4");
+  await expect(page.getByLabel("小金分值")).toHaveValue("7");
+  await expect(page.getByLabel("大金分值")).toHaveValue("10");
+  const normalWin = page.getByLabel("普胜分值");
+  await normalWin.fill("");
+  await expect(normalWin).toHaveValue("");
+  await normalWin.fill("6");
+  await expect(normalWin).toHaveValue("6");
 });
 
 test("损坏的本机数据不会被静默覆盖", async ({ page }) => {

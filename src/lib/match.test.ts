@@ -12,6 +12,7 @@ import {
   DEFAULT_RULES,
   drawMatchCards,
   finishMatch,
+  getPlayerAvatarColor,
   getRankings,
   hasPlayerActivity,
   leaveMatchPlayer,
@@ -35,6 +36,15 @@ const draft = {
 };
 
 describe("追分对局", () => {
+  it("uses the 14710 rules as the default score preset", () => {
+    expect(DEFAULT_RULES.map((rule) => [rule.id, rule.value])).toEqual([
+      ["foul", 1],
+      ["normal-win", 4],
+      ["small-gold", 7],
+      ["big-gold", 10],
+    ]);
+  });
+
   it("支持 2–8 人并保留同名玩家的独立 ID", () => {
     const match = createMatch({ ...draft, playerNames: ["阿杰", "阿杰"] }, 100, first);
     expect(match.players).toHaveLength(2);
@@ -51,9 +61,9 @@ describe("追分对局", () => {
   it("按自定义分值记分并自动轮转", () => {
     const match = createMatch(draft, 100, first);
     const scored = applyScore(match, "normal-win", match.players[0].id, 200);
-    expect(scored.players[0].score).toBe(110);
+    expect(scored.players[0].score).toBe(104);
     expect(scored.currentPlayerId).toBe(match.players[1].id);
-    expect(scored.scoreEvents[0].changes[match.players[0].id]).toBe(10);
+    expect(scored.scoreEvents[0].changes[match.players[0].id]).toBe(4);
   });
 
   it("支持每名玩家独立初始分与得分者继续策略", () => {
@@ -88,7 +98,7 @@ describe("追分对局", () => {
   it("犯规扣分且撤销同时恢复积分与当前玩家", () => {
     const match = createMatch(draft, 100, first);
     const fouled = applyScore(match, "foul", match.players[0].id, 200);
-    expect(fouled.players[0].score).toBe(95);
+    expect(fouled.players[0].score).toBe(99);
     const undone = undoLastScore(fouled);
     expect(undone.players[0].score).toBe(100);
     expect(undone.currentPlayerId).toBe(match.players[0].id);
@@ -253,5 +263,15 @@ describe("追分与奇招牌组合", () => {
     expect(undone.scoreEvents).toHaveLength(0);
     expect(undone.cards!.hands.shared.some((card) => card.instanceId === target.instanceId)).toBe(true);
     expect(undone.cards!.used).toHaveLength(0);
+  });
+
+  it("keeps each avatar color bound to the player after rankings change", () => {
+    const match = createMatch(draft, 100, first);
+    const player = match.players[1];
+    const colorBefore = getPlayerAvatarColor(player.id);
+    const scored = applyScore(match, "big-gold", player.id, 200);
+    const rankedPlayer = getRankings(scored).find((item) => item.id === player.id)!;
+    expect(getRankings(scored)[0].id).toBe(player.id);
+    expect(getPlayerAvatarColor(rankedPlayer.id)).toBe(colorBefore);
   });
 });

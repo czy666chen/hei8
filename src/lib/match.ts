@@ -26,6 +26,19 @@ export interface MatchPlayer {
   leftAt?: number;
 }
 
+export type PlayerAvatarColor = "gold" | "cyan" | "violet" | "mint" | "red";
+
+const PLAYER_AVATAR_COLORS: PlayerAvatarColor[] = ["gold", "cyan", "violet", "mint", "red"];
+
+export function getPlayerAvatarColor(playerId: string): PlayerAvatarColor {
+  let hash = 2166136261;
+  for (let index = 0; index < playerId.length; index += 1) {
+    hash ^= playerId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return PLAYER_AVATAR_COLORS[(hash >>> 0) % PLAYER_AVATAR_COLORS.length];
+}
+
 export interface ScoreRule {
   id: string;
   label: string;
@@ -118,11 +131,10 @@ export interface MatchDraft {
 }
 
 export const DEFAULT_RULES: ScoreRule[] = [
-  { id: "normal-win", label: "普胜", value: 10, kind: "gain", enabled: true, color: "mint" },
-  { id: "small-gold", label: "小金", value: 20, kind: "gain", enabled: true, color: "cyan" },
-  { id: "big-gold", label: "大金", value: 30, kind: "gain", enabled: true, color: "gold" },
-  { id: "golden-nine", label: "黄金 9", value: 40, kind: "gain", enabled: false, color: "violet" },
-  { id: "foul", label: "犯规", value: 5, kind: "penalty", enabled: true, color: "red" },
+  { id: "foul", label: "犯规", value: 1, kind: "penalty", enabled: true, color: "red" },
+  { id: "normal-win", label: "普胜", value: 4, kind: "gain", enabled: true, color: "mint" },
+  { id: "small-gold", label: "小金", value: 7, kind: "gain", enabled: true, color: "cyan" },
+  { id: "big-gold", label: "大金", value: 10, kind: "gain", enabled: true, color: "gold" },
 ];
 
 const makeId = (prefix: string, now = Date.now()) =>
