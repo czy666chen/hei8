@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CARD_DEFINITIONS } from "../src/data/cards";
+import { CARD_DEFINITIONS, CardCategory } from "../src/data/cards";
 import { GameState, loadGameState } from "../src/lib/deck";
 import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId } from "../src/lib/official-decks";
 import {
@@ -10,6 +10,7 @@ import {
   applyHandicapScore,
   applyScore,
   applyTransferScore,
+  AutoDrawPolicy,
   backfillScoreEvent,
   BilliardsMatch,
   CardMode,
@@ -18,6 +19,7 @@ import {
   deleteMatchPlayer,
   DEFAULT_RULES,
   drawMatchCards,
+  DeckExhaustionPolicy,
   finishMatch,
   getRankings,
   isStoredMatch,
@@ -30,8 +32,11 @@ import {
   ScoreRule,
   setCurrentPlayer,
   skipMatchCard,
+  triggerMatchCardRefill,
   TurnStrategy,
   undoLastScore,
+  undoCardAction,
+  updateMatchCardSettings,
 } from "../src/lib/match";
 
 const APP_STORAGE_KEY = "billiards-club-assistant:v1";
@@ -227,6 +232,12 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
   const [rules, setRules] = useState(savedRules.map((rule) => ({ ...rule })));
   const [cardMode, setCardMode] = useState<CardMode>(initialMode === "score" ? "none" : "shared");
   const [handSize, setHandSize] = useState(3);
+  const [cardAutoDrawPolicy, setCardAutoDrawPolicy] = useState<AutoDrawPolicy>("manual");
+  const [cardHandLimit, setCardHandLimit] = useState(5);
+  const [cardExhaustionPolicy, setCardExhaustionPolicy] = useState<DeckExhaustionPolicy>("stop");
+  const [excludedCategories, setExcludedCategories] = useState<CardCategory[]>([]);
+  const [maxSafetyLevel, setMaxSafetyLevel] = useState<"low" | "medium" | "review">("review");
+  const [excludedKeywords, setExcludedKeywords] = useState("");
   const [deckId, setDeckId] = useState<OfficialDeckId>("complete");
   const [reviewing, setReviewing] = useState(false);
   const [savePreset, setSavePreset] = useState(false);
@@ -290,8 +301,12 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
     playerInitialScores: validPlayers.map((player) => player.initialScore),
     turnStrategy,
     rules,
-    cardMode: initialMode === "cards" && cardMode === "none" ? "shared" : cardMode,
-    initialHandSize: cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize,
+      cardMode: initialMode === "cards" && cardMode === "none" ? "shared" : cardMode,
+      initialHandSize: cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize,
+      cardAutoDrawPolicy,
+      cardHandLimit: Math.max(handSize, cardHandLimit),
+      cardExhaustionPolicy,
+      cardFilter: { excludedCategories, maxSafetyLevel, excludedKeywords: excludedKeywords.split(/[，,]/).map((keyword) => keyword.trim()).filter(Boolean) },
       deckId,
     }, nextPresets);
   };
@@ -347,6 +362,7 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart }
                 <button className={cardMode === "independent" ? "active" : ""} onClick={() => setCardMode("independent")}>独立手牌</button>
               </div>
               {cardMode !== "none" && <><div className="deck-picker" aria-label="选择官方牌组">{OFFICIAL_DECKS.map((deck) => <button key={deck.id} className={deckId === deck.id ? "active" : ""} onClick={() => setDeckId(deck.id)}><b>{deck.name}</b><small>{officialDeckCardCount(deck)} 张 · {deck.difficulty}</small><span>{deck.description}</span></button>)}</div><label className="initial-score"><span>{cardMode === "shared" ? "共用起始手牌" : "每人起始手牌"}</span><input type="number" min="0" max="10" inputMode="numeric" value={handSize} onChange={(event) => setHandSize(Number(event.target.value))} /><small>{selectedDeck.name} · {selectedDeckCount} 张实体牌</small></label></>}
+              {cardMode !== "none" && <div className="advanced-card-settings"><label><span>自动补牌</span><select aria-label="自动补牌策略" value={cardAutoDrawPolicy} onChange={(event) => setCardAutoDrawPolicy(event.target.value as AutoDrawPolicy)}><option value="manual">仅手动抽牌</option><option value="game">每小局补满</option><option value="round">每轮补满</option><option value="after_play">用牌后补一张</option></select></label><label><span>手牌上限</span><input aria-label="手牌上限" type="number" min={handSize} max="20" value={cardHandLimit} onChange={(event) => setCardHandLimit(Number(event.target.value))} /></label><label><span>牌库耗尽</span><select aria-label="牌库耗尽策略" value={cardExhaustionPolicy} onChange={(event) => setCardExhaustionPolicy(event.target.value as DeckExhaustionPolicy)}><option value="stop">停止抽牌</option><option value="reshuffle">确认后重洗弃牌</option></select></label><label><span>最高安全等级</span><select aria-label="卡牌最高安全等级" value={maxSafetyLevel} onChange={(event) => setMaxSafetyLevel(event.target.value as "low" | "medium" | "review")}><option value="review">包含待复核</option><option value="medium">排除待复核</option><option value="low">仅低风险</option></select></label><fieldset><legend>排除类别</legend>{([['strategy','竞技策略'],['social','社交惩罚'],['physical','身体动作'],['chaos','趣味混沌']] as const).map(([id, label]) => <label key={id}><input type="checkbox" checked={excludedCategories.includes(id)} onChange={(event) => setExcludedCategories(event.target.checked ? [...excludedCategories, id] : excludedCategories.filter((item) => item !== id))} />{label}</label>)}</fieldset><label className="filter-keywords"><span>排除关键词</span><input aria-label="排除卡牌关键词" placeholder="用逗号分隔，例如：红包，朋友圈" value={excludedKeywords} onChange={(event) => setExcludedKeywords(event.target.value)} /></label></div>}
               <aside className="safety-callout"><span>!</span><p><b>安全跳过机制已启用</b>危险动作或身体不适时，双方同意即可跳过并自动补抽，不计犯规。</p></aside>
             </section>
           </div>
@@ -430,29 +446,46 @@ function CardBoard({ match, onChange, toast }: { match: BilliardsMatch; onChange
   const cards = match.cards!;
   const handIds = Object.keys(cards.hands).filter((id) => id === "shared" || match.players.some((player) => player.id === id && player.active));
   const [handId, setHandId] = useState(handIds[0]);
+  const [reshuffleArmed, setReshuffleArmed] = useState(false);
+  const [linkPlayerId, setLinkPlayerId] = useState(match.currentPlayerId);
+  const [linkDelta, setLinkDelta] = useState(0);
+  const [linkNote, setLinkNote] = useState("");
   const activeHand = cards.hands[handId] ? handId : handIds[0];
   const label = activeHand === "shared" ? "共用手牌" : match.players.find((player) => player.id === activeHand)?.name ?? "玩家手牌";
+  const handLimit = cards.handLimit ?? Math.max(cards.initialHandSize, 5);
+  const canRecycle = cards.exhaustionPolicy === "reshuffle" && (cards.used.length > 0 || cards.skipped.length > 0);
   const draw = () => {
-    if (!cards.remaining.length) return;
-    onChange(drawMatchCards(match, activeHand, 1));
+    if (!cards.remaining.length && canRecycle && !reshuffleArmed) { setReshuffleArmed(true); return; }
+    const updated = drawMatchCards(match, activeHand, 1, Date.now(), undefined, { allowReshuffle: reshuffleArmed });
+    onChange(updated);
+    setReshuffleArmed(false);
     toast(`已为${label}抽取 1 张奇招牌`);
+  };
+  const triggerRefill = (trigger: "game" | "round") => {
+    if (!cards.remaining.length && canRecycle && !reshuffleArmed) { setReshuffleArmed(true); toast("牌库已耗尽，请再次确认重洗弃牌"); return; }
+    const updated = triggerMatchCardRefill(match, trigger, Date.now(), undefined, reshuffleArmed);
+    onChange(updated);
+    setReshuffleArmed(false);
+    toast(trigger === "game" ? "已按新小局策略补牌" : "已按新一轮策略补牌");
   };
   return (
     <section className="match-section card-board">
-      <div className="section-heading"><div><p className="kicker">TRICK DECK · {cards.remaining.length} LEFT</p><h2>{label}</h2></div><button className="primary compact" disabled={!cards.remaining.length} onClick={draw}>抽一张 <span>→</span></button></div>
+      <div className="section-heading"><div><p className="kicker">TRICK DECK · {cards.remaining.length} LEFT</p><h2>{label}</h2></div><button className={reshuffleArmed ? "danger-button compact" : "primary compact"} disabled={cards.hands[activeHand].length >= handLimit || (!cards.remaining.length && !canRecycle)} onClick={draw}>{reshuffleArmed ? "确认重洗并抽牌" : "抽一张"} <span>→</span></button></div>
+      <div className="card-control-panel"><label><span>补牌策略</span><select aria-label="对局中自动补牌策略" value={cards.autoDrawPolicy ?? "manual"} onChange={(event) => onChange(updateMatchCardSettings(match, { autoDrawPolicy: event.target.value as AutoDrawPolicy }))}><option value="manual">仅手动</option><option value="game">每小局</option><option value="round">每轮</option><option value="after_play">用牌后</option></select></label><label><span>手牌上限</span><input aria-label="对局中手牌上限" type="number" min={cards.initialHandSize} max="20" value={handLimit} onChange={(event) => onChange(updateMatchCardSettings(match, { handLimit: Number(event.target.value) }))} /></label><label><span>耗尽策略</span><select aria-label="对局中牌库耗尽策略" value={cards.exhaustionPolicy ?? "stop"} onChange={(event) => onChange(updateMatchCardSettings(match, { exhaustionPolicy: event.target.value as DeckExhaustionPolicy }))}><option value="stop">停止抽牌</option><option value="reshuffle">确认后重洗</option></select></label><button disabled={cards.autoDrawPolicy !== "game"} onClick={() => triggerRefill("game")}>{reshuffleArmed ? "确认重洗并补满" : "新小局补牌"}</button><button disabled={cards.autoDrawPolicy !== "round"} onClick={() => triggerRefill("round")}>{reshuffleArmed ? "确认重洗并补满" : "新一轮补牌"}</button></div>
       {handIds.length > 1 && <div className="hand-tabs">{handIds.map((id) => <button key={id} className={activeHand === id ? "active" : ""} onClick={() => setHandId(id)}>{match.players.find((player) => player.id === id)?.name}<small>{cards.hands[id].length} 张</small></button>)}</div>}
+      <div className="card-score-link"><header><b>卡牌影响积分（可选）</b><small>填写非零分值后，使用卡牌会生成双向关联计分事件。</small></header><select aria-label="卡牌计分玩家" value={linkPlayerId} onChange={(event) => setLinkPlayerId(event.target.value)}>{match.players.filter((player) => player.active).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}</select><input aria-label="卡牌关联分值" type="number" inputMode="numeric" value={linkDelta} onChange={(event) => setLinkDelta(Number(event.target.value))} /><input aria-label="卡牌关联计分备注" maxLength={80} placeholder="关联说明（可选）" value={linkNote} onChange={(event) => setLinkNote(event.target.value)} /></div>
       {cards.hands[activeHand].length ? (
         <div className="trick-grid">
           {cards.hands[activeHand].map((card) => (
             <article className="trick-card" key={card.instanceId}>
               <div className="card-top"><span>NO. {card.displayNumber}</span><i>8</i></div><h3>{card.title}</h3><p>{card.effect}</p>
               {card.safetyNote && <aside><b>安全提示</b>{card.safetyNote}</aside>}
-              <div><button onClick={() => { onChange(playMatchCard(match, activeHand, card.instanceId)); toast(`已使用「${card.title}」`); }}>使用此卡</button><button onClick={() => { onChange(skipMatchCard(match, activeHand, card.instanceId)); toast(`已安全跳过「${card.title}」并补抽`); }}>安全跳过</button></div>
+              <div><button onClick={() => { onChange(playMatchCard(match, activeHand, card.instanceId, Date.now(), linkDelta ? { playerId: linkPlayerId, delta: linkDelta, note: linkNote } : undefined)); setLinkDelta(0); setLinkNote(""); toast(`已使用「${card.title}」${linkDelta ? "并关联计分" : ""}`); }}>使用此卡</button><button onClick={() => { onChange(skipMatchCard(match, activeHand, card.instanceId)); toast(`已安全跳过「${card.title}」并补抽`); }}>安全跳过</button></div>
             </article>
           ))}
         </div>
       ) : <div className="empty-state"><span>8</span><div><b>手牌还是空的</b><small>从剩余 {cards.remaining.length} 张牌中抽一张试试。</small></div><button onClick={draw}>立即抽牌</button></div>}
-      {!!cards.events.length && <details className="card-log"><summary>卡牌流水 <span>{cards.events.length} 条</span></summary>{cards.events.slice(0, 8).map((event) => <div key={event.id}><b>{event.label}</b><small>{formatTime(event.occurredAt)}</small></div>)}</details>}
+      {!!cards.events.length && <details className="card-log"><summary>卡牌流水 <span>{cards.events.length} 条</span></summary>{cards.events.slice(0, 8).map((event) => <div key={event.id}><b>{event.label}{event.relatedScoreEventId && " · 已关联积分"}</b><span><small>{formatTime(event.occurredAt)}</small><button onClick={() => { onChange(undoCardAction(match, event.id)); toast("已撤销整组卡牌动作及关联积分"); }}>撤销</button></span></div>)}</details>}
     </section>
   );
 }
@@ -519,14 +552,18 @@ function HistoryCorrectionDock({ match, onChange }: { match: BilliardsMatch; onC
   return <aside className={`history-correction ${enabled ? "enabled" : ""}`}><div><b>{enabled ? "受控纠错模式已开启" : "已结束对局默认只读"}</b><small>{enabled ? "更正会追加反向事件，原流水不会删除。" : "仅在确认需要修正结算时开启。"}</small></div><button className={enabled ? "danger-button" : "secondary"} onClick={() => setEnabled(!enabled)}>{enabled ? "退出纠错" : "进入纠错模式"}</button>{enabled && <div className="history-correction-events">{correctable.length ? correctable.slice(0, 8).map((event) => <button key={event.id} onClick={() => { onChange(correctScoreEvent(match, event.id, "结束局受控更正", Date.now(), true)); setEnabled(false); }}>更正：{match.players.find((player) => player.id === event.playerId)?.name} · {event.label}</button>) : <small>当前没有可更正的计分事件。</small>}</div>}</aside>;
 }
 
-function HistoryPage({ history, selectedId, onSelect }: { history: BilliardsMatch[]; selectedId?: string; onSelect: (id: string) => void }) {
+function UnifiedHistoryPage({ history, selectedId, onSelect }: { history: BilliardsMatch[]; selectedId?: string; onSelect: (id: string) => void }) {
   const selected = history.find((match) => match.id === selectedId);
-  if (selected) {
-    const rankings = getRankings(selected);
-    const eventStats = selected.rules.map((rule) => ({ label: rule.label, count: selected.scoreEvents.filter((event) => event.label === rule.label).length })).filter((item) => item.count > 0);
-    return <div className="content-page page-shell"><button className="back-link" onClick={() => onSelect("")}>← 返回战绩</button><header className="page-title"><p className="kicker">MATCH DETAIL</p><h1>{selected.mode === "cards" ? "奇招卡牌局" : "追分结算"}</h1><p>{formatTime(selected.startedAt)} · {formatDuration(selected.startedAt, selected.endedAt)}</p></header><section className="result-podium">{rankings.map((player, index) => <div key={player.id}><span>{index + 1}</span><b>{player.name}</b><strong>{player.score}<small> 分</small></strong><small>较开局 {player.score - player.initialScore >= 0 ? "+" : ""}{player.score - player.initialScore}</small></div>)}</section><section className="event-stats"><div><strong>{selected.scoreEvents.length}</strong><span>计分事件</span></div><div><strong>{selected.cards?.used.length ?? 0}</strong><span>已使用卡牌</span></div><div><strong>{selected.cards?.skipped.length ?? 0}</strong><span>安全跳过</span></div>{eventStats.slice(0, 3).map((item) => <div key={item.label}><strong>{item.count}</strong><span>{item.label}</span></div>)}</section><section className="history-detail"><div className="section-heading"><div><p className="kicker">FULL TIMELINE</p><h2>完整流水</h2></div></div>{[...selected.scoreEvents.map((event) => ({ id: event.id, at: event.occurredAt, label: `${selected.players.find((player) => player.id === event.playerId)?.name} · ${event.label}`, value: event.changes[event.playerId] })), ...(selected.cards?.events ?? []).map((event) => ({ id: event.id, at: event.occurredAt, label: event.label, value: undefined }))].sort((a, b) => b.at - a.at).map((event) => <div className="timeline-row" key={event.id}><span>{formatTime(event.at)}</span><b>{event.label}</b>{event.value !== undefined && <strong className={event.value < 0 ? "negative" : "positive"}>{event.value > 0 ? "+" : ""}{event.value}</strong>}</div>)}</section></div>;
+  if (!selected) {
+    return <div className="content-page page-shell"><header className="page-title"><p className="kicker">MATCH HISTORY</p><h1>战绩</h1><p>所有已结束对局都保存在这台设备上，可查看规则快照和完整流水。</p></header>{history.length ? <div className="history-grid">{history.map((match) => { const winner = getRankings(match)[0]; return <button key={match.id} onClick={() => onSelect(match.id)}><span className="history-type">{match.mode === "cards" ? "奇招牌" : match.mode === "score_cards" ? "追分 + 奇招牌" : "多人追分"}</span><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {formatDuration(match.startedAt, match.endedAt)}</small><div><span>第一名</span><strong>{winner?.name}{match.mode !== "cards" && ` · ${winner?.score} 分`}</strong><i>→</i></div></button>; })}</div> : <div className="large-empty"><span>⌁</span><h2>还没有战绩</h2><p>完成第一场对局后，排名、计分与卡牌流水都会保存在这里。</p></div>}</div>;
   }
-  return <div className="content-page page-shell"><header className="page-title"><p className="kicker">MATCH HISTORY</p><h1>战绩</h1><p>所有已结束对局都保存在这台设备上，可查看规则快照和完整流水。</p></header>{history.length ? <div className="history-grid">{history.map((match) => { const winner = getRankings(match)[0]; return <button key={match.id} onClick={() => onSelect(match.id)}><span className="history-type">{match.mode === "cards" ? "奇招牌" : match.mode === "score_cards" ? "追分 + 奇招牌" : "多人追分"}</span><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {formatDuration(match.startedAt, match.endedAt)}</small><div><span>第一名</span><strong>{winner?.name}{match.mode !== "cards" && ` · ${winner?.score} 分`}</strong><i>→</i></div></button>; })}</div> : <div className="large-empty"><span>⌁</span><h2>还没有战绩</h2><p>完成第一场对局后，排名、计分与卡牌流水都会保存在这里。</p></div>}</div>;
+  const rankings = getRankings(selected);
+  const timeline = [
+    ...selected.scoreEvents.map((event) => ({ id: event.id, kind: "score" as const, at: event.occurredAt, label: `${selected.players.find((player) => player.id === event.playerId)?.name} · ${event.label}`, value: event.changes[event.playerId], note: event.note, linkedId: event.linkedCardEventId })),
+    ...(selected.cards?.events ?? []).map((event) => ({ id: event.id, kind: "card" as const, at: event.occurredAt, label: event.label, value: undefined, note: undefined, linkedId: event.relatedScoreEventId })),
+  ].sort((a, b) => b.at - a.at || b.id.localeCompare(a.id));
+  const jumpTo = (id: string) => document.getElementById(`timeline-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  return <div className="content-page page-shell"><button className="back-link" onClick={() => onSelect("")}>← 返回战绩</button><header className="page-title"><p className="kicker">MATCH DETAIL</p><h1>{selected.mode === "cards" ? "奇招卡牌局" : "追分结算"}</h1><p>{formatTime(selected.startedAt)} · {formatDuration(selected.startedAt, selected.endedAt)}</p></header><section className="result-podium">{rankings.map((player, index) => <div key={player.id}><span>{index + 1}</span><b>{player.name}</b><strong>{player.score}<small> 分</small></strong><small>较开局 {player.score - player.initialScore >= 0 ? "+" : ""}{player.score - player.initialScore}</small></div>)}</section><section className="event-stats"><div><strong>{selected.scoreEvents.length}</strong><span>计分事件</span></div><div><strong>{selected.cards?.events.length ?? 0}</strong><span>卡牌事件</span></div><div><strong>{timeline.filter((event) => event.linkedId).length / 2}</strong><span>牌分联动</span></div></section><section className="history-detail"><div className="section-heading"><div><p className="kicker">UNIFIED TIMELINE</p><h2>真实发生顺序</h2></div></div>{timeline.map((event) => <div className={`timeline-row unified ${event.kind}`} id={`timeline-${event.id}`} key={event.id}><span>{formatTime(event.at)}</span><div><b><i>{event.kind === "score" ? "积分" : "卡牌"}</i>{event.label}</b>{event.note && <small>{event.note}</small>}{event.linkedId && <button onClick={() => jumpTo(event.linkedId!)}>查看关联{event.kind === "score" ? "卡牌" : "积分"} ↕</button>}</div>{event.value !== undefined && <strong className={event.value < 0 ? "negative" : "positive"}>{event.value > 0 ? "+" : ""}{event.value}</strong>}</div>)}</section></div>;
 }
 
 function ProfilePage({ history }: { history: BilliardsMatch[] }) {
@@ -664,7 +701,7 @@ export default function GameApp() {
     if (path.startsWith("/history")) {
       const selectedId = path.split("/")[2];
       const selectedMatch = data.history.find((match) => match.id === selectedId);
-      return <><HistoryPage history={data.history} selectedId={selectedId} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />{selectedMatch && selectedMatch.scoreEvents.length > 0 && <HistoryCorrectionDock match={selectedMatch} onChange={(updated) => setData({ ...data, history: data.history.map((match) => match.id === updated.id ? updated : match) })} />}</>;
+      return <><UnifiedHistoryPage history={data.history} selectedId={selectedId} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />{selectedMatch && selectedMatch.scoreEvents.length > 0 && <HistoryCorrectionDock match={selectedMatch} onChange={(updated) => setData({ ...data, history: data.history.map((match) => match.id === updated.id ? updated : match) })} />}</>;
     }
     if (path === "/profile") return <ProfilePage history={data.history} />;
     return <div className="large-empty page-shell"><span>404</span><h2>页面不存在</h2><button className="primary" onClick={() => navigate("/")}>返回对局</button></div>;

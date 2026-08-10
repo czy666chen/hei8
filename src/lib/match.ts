@@ -1,10 +1,19 @@
 import { CardInstance, createDeck, secureRandomIndex } from "./deck";
 import { getOfficialDeck, OfficialDeckId } from "./official-decks";
+import { CARD_DEFINITIONS, CardCategory, CardSafetyLevel, getCardCategory, getCardSafetyLevel } from "../data/cards";
 
 export type MatchMode = "cards" | "score" | "score_cards";
 export type CardMode = "none" | "shared" | "independent";
 export type ScoreRuleKind = "gain" | "penalty";
 export type TurnStrategy = "fixed" | "winner_stays";
+export type AutoDrawPolicy = "manual" | "game" | "round" | "after_play";
+export type DeckExhaustionPolicy = "stop" | "reshuffle";
+
+export interface MatchCardFilter {
+  excludedCategories: CardCategory[];
+  maxSafetyLevel: CardSafetyLevel;
+  excludedKeywords: string[];
+}
 
 export interface MatchPlayer {
   id: string;
@@ -38,15 +47,20 @@ export interface ScoreEvent {
   occurredAt: number;
   note?: string;
   correctsEventId?: string;
+  linkedCardEventId?: string;
 }
 
 export interface CardEvent {
   id: string;
-  type: "draw" | "play" | "skip";
+  type: "draw" | "play" | "skip" | "reshuffle";
   label: string;
   handId: string;
   card?: CardInstance;
   occurredAt: number;
+  actionId?: string;
+  relatedScoreEventId?: string;
+  reshuffledUsed?: CardInstance[];
+  reshuffledSkipped?: CardInstance[];
 }
 
 export interface MatchCardState {
@@ -57,12 +71,17 @@ export interface MatchCardState {
   skipped: CardInstance[];
   events: CardEvent[];
   initialHandSize: number;
+  autoDrawPolicy?: AutoDrawPolicy;
+  handLimit?: number;
+  exhaustionPolicy?: DeckExhaustionPolicy;
+  filter?: MatchCardFilter;
   deckSnapshot: {
     id: OfficialDeckId;
     version: 1;
     name: string;
     definitionIds: string[];
     cardCount: number;
+    filter?: MatchCardFilter;
   };
 }
 
@@ -80,6 +99,10 @@ export interface BilliardsMatch {
   scoreEvents: ScoreEvent[];
   cards?: MatchCardState;
   turnStrategy?: TurnStrategy;
+  cardAutoDrawPolicy?: AutoDrawPolicy;
+  cardHandLimit?: number;
+  cardExhaustionPolicy?: DeckExhaustionPolicy;
+  cardFilter?: Partial<MatchCardFilter>;
 }
 
 export interface MatchDraft {
@@ -120,6 +143,31 @@ function takeRandom(source: CardInstance[], count: number, randomIndex = secureR
   return { remaining, drawn };
 }
 
+export const DEFAULT_CARD_FILTER: MatchCardFilter = {
+  excludedCategories: [],
+  maxSafetyLevel: "review",
+  excludedKeywords: [],
+};
+
+function normalizeCardFilter(filter?: Partial<MatchCardFilter>): MatchCardFilter {
+  const categories: CardCategory[] = ["strategy", "social", "physical", "chaos"];
+  const safetyLevels: CardSafetyLevel[] = ["low", "medium", "review"];
+  return {
+    excludedCategories: Array.from(new Set((filter?.excludedCategories ?? []).filter((item): item is CardCategory => categories.includes(item)))),
+    maxSafetyLevel: safetyLevels.includes(filter?.maxSafetyLevel as CardSafetyLevel) ? filter!.maxSafetyLevel! : "review",
+    excludedKeywords: Array.from(new Set((filter?.excludedKeywords ?? []).map((item) => item.trim().toLowerCase()).filter(Boolean))),
+  };
+}
+
+function cardAllowed(definitionId: string, filter: MatchCardFilter): boolean {
+  const definition = CARD_DEFINITIONS.find((card) => card.id === definitionId);
+  if (!definition || filter.excludedCategories.includes(getCardCategory(definition))) return false;
+  const allowedSafety = filter.maxSafetyLevel === "review" ? ["low", "medium", "review"] : filter.maxSafetyLevel === "medium" ? ["low", "medium"] : ["low"];
+  if (!allowedSafety.includes(getCardSafetyLevel(definition))) return false;
+  const searchable = `${definition.title}${definition.effect}${definition.safetyNote ?? ""}`.toLowerCase();
+  return !filter.excludedKeywords.some((keyword) => searchable.includes(keyword));
+}
+
 export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = secureRandomIndex): BilliardsMatch {
   const names = draft.playerNames.map((name) => name.trim()).filter(Boolean).slice(0, 8);
   if (names.length < 2) throw new Error("至少需要 2 名玩家");
@@ -136,10 +184,12 @@ export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = s
   let cards: MatchCardState | undefined;
   if (draft.cardMode !== "none") {
     const officialDeck = getOfficialDeck(draft.deckId);
+    const filter = normalizeCardFilter(draft.cardFilter);
     const handIds = draft.cardMode === "shared" ? ["shared"] : players.map((player) => player.id);
-    let remaining = createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId));
+    let remaining = createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId) && cardAllowed(card.definitionId, filter));
     const hands: Record<string, CardInstance[]> = {};
     const size = Math.max(0, Math.min(Math.trunc(draft.initialHandSize), Math.floor(remaining.length / handIds.length)));
+    const handLimit = Math.max(size, Math.min(20, Math.max(1, Math.trunc(draft.cardHandLimit ?? Math.max(size, 5)))));
     for (const handId of handIds) {
       const dealt = takeRandom(remaining, size, randomIndex);
       remaining = dealt.remaining;
@@ -153,12 +203,17 @@ export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = s
       skipped: [],
       events: [],
       initialHandSize: size,
+      autoDrawPolicy: draft.cardAutoDrawPolicy ?? "manual",
+      handLimit,
+      exhaustionPolicy: draft.cardExhaustionPolicy ?? "stop",
+      filter,
       deckSnapshot: {
         id: officialDeck.id,
         version: officialDeck.version,
         name: officialDeck.name,
-        definitionIds: [...officialDeck.definitionIds],
-        cardCount: createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId)).length,
+        definitionIds: Array.from(new Set(remaining.concat(...Object.values(hands)).map((card) => card.definitionId))),
+        cardCount: remaining.length + Object.values(hands).reduce((sum, hand) => sum + hand.length, 0),
+        filter: { ...filter, excludedCategories: [...filter.excludedCategories], excludedKeywords: [...filter.excludedKeywords] },
       },
     };
   }
@@ -353,50 +408,154 @@ export function finishMatch(match: BilliardsMatch, now = Date.now()): BilliardsM
   return { ...match, status: "completed", endedAt: now };
 }
 
-export function drawMatchCards(match: BilliardsMatch, handId: string, count = 1, now = Date.now(), randomIndex = secureRandomIndex): BilliardsMatch {
-  if (!match.cards || !match.cards.hands[handId] || match.status !== "active") return match;
-  const dealt = takeRandom(match.cards.remaining, count, randomIndex);
-  const events = dealt.drawn.map((card, index): CardEvent => ({
-    id: makeId("card", now + index), type: "draw", label: `抽取「${card.title}」`, handId, card, occurredAt: now + index,
-  }));
+export interface DrawMatchCardOptions {
+  allowReshuffle?: boolean;
+  actionId?: string;
+  labelPrefix?: string;
+}
+
+export interface LinkedCardScore {
+  playerId: string;
+  delta: number;
+  note?: string;
+}
+
+const cardHandLimit = (cards: MatchCardState) => Math.max(cards.initialHandSize, cards.handLimit ?? Math.max(cards.initialHandSize, 5));
+
+export function updateMatchCardSettings(match: BilliardsMatch, settings: { autoDrawPolicy?: AutoDrawPolicy; handLimit?: number; exhaustionPolicy?: DeckExhaustionPolicy }): BilliardsMatch {
+  if (!match.cards || match.status !== "active") return match;
   return {
     ...match,
     cards: {
       ...match.cards,
-      remaining: dealt.remaining,
-      hands: { ...match.cards.hands, [handId]: [...dealt.drawn, ...match.cards.hands[handId]] },
-      events: [...events, ...match.cards.events],
+      autoDrawPolicy: settings.autoDrawPolicy ?? match.cards.autoDrawPolicy ?? "manual",
+      handLimit: Math.max(match.cards.initialHandSize, Math.min(20, Math.max(1, Math.trunc(settings.handLimit ?? cardHandLimit(match.cards))))),
+      exhaustionPolicy: settings.exhaustionPolicy ?? match.cards.exhaustionPolicy ?? "stop",
     },
   };
 }
 
-export function playMatchCard(match: BilliardsMatch, handId: string, instanceId: string, now = Date.now()): BilliardsMatch {
-  const card = match.cards?.hands[handId]?.find((item) => item.instanceId === instanceId);
-  if (!match.cards || !card || match.status !== "active") return match;
+export function drawMatchCards(match: BilliardsMatch, handId: string, count = 1, now = Date.now(), randomIndex = secureRandomIndex, options: DrawMatchCardOptions = {}): BilliardsMatch {
+  if (!match.cards || !match.cards.hands[handId] || match.status !== "active") return match;
+  const capacity = Math.max(0, cardHandLimit(match.cards) - match.cards.hands[handId].length);
+  const requested = Math.min(Math.max(0, Math.trunc(count)), capacity);
+  if (!requested) return match;
+  const actionId = options.actionId ?? makeId("card-action", now);
+  let cards = match.cards;
+  const extraEvents: CardEvent[] = [];
+  if (cards.remaining.length < requested && cards.exhaustionPolicy === "reshuffle" && options.allowReshuffle && (cards.used.length || cards.skipped.length)) {
+    const reshuffledUsed = [...cards.used];
+    const reshuffledSkipped = [...cards.skipped];
+    cards = { ...cards, remaining: [...cards.remaining, ...reshuffledUsed, ...reshuffledSkipped], used: [], skipped: [] };
+    extraEvents.push({ id: makeId("card", now), type: "reshuffle", label: `重洗 ${reshuffledUsed.length + reshuffledSkipped.length} 张弃牌`, handId, occurredAt: now, actionId, reshuffledUsed, reshuffledSkipped });
+  }
+  const drawCount = Math.min(requested, cards.remaining.length);
+  if (!drawCount) return match;
+  const dealt = takeRandom(cards.remaining, drawCount, randomIndex);
+  const drawEvents = dealt.drawn.map((card, index): CardEvent => ({
+    id: makeId("card", now + index + 1), type: "draw", label: `${options.labelPrefix ?? "手动抽牌"}「${card.title}」`, handId, card, occurredAt: now + index + 1, actionId,
+  })).reverse();
   return {
     ...match,
+    cards: {
+      ...cards,
+      remaining: dealt.remaining,
+      hands: { ...cards.hands, [handId]: [...dealt.drawn, ...cards.hands[handId]] },
+      events: [...drawEvents, ...extraEvents, ...cards.events],
+    },
+  };
+}
+
+export function triggerMatchCardRefill(match: BilliardsMatch, trigger: "game" | "round", now = Date.now(), randomIndex = secureRandomIndex, allowReshuffle = false): BilliardsMatch {
+  if (!match.cards || match.cards.autoDrawPolicy !== trigger || match.status !== "active") return match;
+  let updated = match;
+  const handIds = Object.keys(match.cards.hands);
+  handIds.forEach((handId, index) => {
+    const cards = updated.cards!;
+    const needed = Math.max(0, cardHandLimit(cards) - cards.hands[handId].length);
+    updated = drawMatchCards(updated, handId, needed, now + index * 100, randomIndex, { allowReshuffle, labelPrefix: trigger === "game" ? "小局补牌" : "轮次补牌" });
+  });
+  return updated;
+}
+
+export function playMatchCard(match: BilliardsMatch, handId: string, instanceId: string, now = Date.now(), linkedScore?: LinkedCardScore, randomIndex = secureRandomIndex, allowReshuffle = false): BilliardsMatch {
+  const card = match.cards?.hands[handId]?.find((item) => item.instanceId === instanceId);
+  if (!match.cards || !card || match.status !== "active") return match;
+  const actionId = makeId("card-action", now);
+  const cardEventId = makeId("card", now);
+  const linkedPlayer = linkedScore && match.players.find((player) => player.id === linkedScore.playerId);
+  const delta = linkedPlayer ? Math.trunc(linkedScore!.delta) : 0;
+  const scoreEvent = linkedPlayer && delta ? {
+    id: makeId("card-score", now), type: "score" as const, label: `卡牌 · ${card.title}`, playerId: linkedPlayer.id,
+    changes: { [linkedPlayer.id]: delta }, previousCurrentPlayerId: match.currentPlayerId, occurredAt: now + 1,
+    note: linkedScore?.note?.trim() || "卡牌效果计分", linkedCardEventId: cardEventId,
+  } : undefined;
+  const cardEvent: CardEvent = { id: cardEventId, type: "play", label: `使用「${card.title}」`, handId, card, occurredAt: now, actionId, ...(scoreEvent ? { relatedScoreEventId: scoreEvent.id } : {}) };
+  let updated: BilliardsMatch = {
+    ...match,
+    players: scoreEvent ? match.players.map((player) => player.id === linkedPlayer!.id ? { ...player, score: player.score + delta } : player) : match.players,
+    scoreEvents: scoreEvent ? [scoreEvent, ...match.scoreEvents] : match.scoreEvents,
     cards: {
       ...match.cards,
       hands: { ...match.cards.hands, [handId]: match.cards.hands[handId].filter((item) => item.instanceId !== instanceId) },
       used: [card, ...match.cards.used],
-      events: [{ id: makeId("card", now), type: "play", label: `使用「${card.title}」`, handId, card, occurredAt: now }, ...match.cards.events],
+      events: [cardEvent, ...match.cards.events],
     },
   };
+  if (updated.cards?.autoDrawPolicy === "after_play") updated = drawMatchCards(updated, handId, 1, now + 2, randomIndex, { allowReshuffle, actionId, labelPrefix: "用牌补牌" });
+  return updated;
 }
 
-export function skipMatchCard(match: BilliardsMatch, handId: string, instanceId: string, now = Date.now(), randomIndex = secureRandomIndex): BilliardsMatch {
+export function skipMatchCard(match: BilliardsMatch, handId: string, instanceId: string, now = Date.now(), randomIndex = secureRandomIndex, allowReshuffle = false): BilliardsMatch {
   const card = match.cards?.hands[handId]?.find((item) => item.instanceId === instanceId);
   if (!match.cards || !card || match.status !== "active") return match;
+  const actionId = makeId("card-action", now);
   const base: BilliardsMatch = {
     ...match,
     cards: {
       ...match.cards,
       hands: { ...match.cards.hands, [handId]: match.cards.hands[handId].filter((item) => item.instanceId !== instanceId) },
       skipped: [card, ...match.cards.skipped],
-      events: [{ id: makeId("card", now), type: "skip", label: `安全跳过「${card.title}」`, handId, card, occurredAt: now }, ...match.cards.events],
+      events: [{ id: makeId("card", now), type: "skip", label: `安全跳过「${card.title}」`, handId, card, occurredAt: now, actionId }, ...match.cards.events],
     },
   };
-  return base.cards?.remaining.length ? drawMatchCards(base, handId, 1, now + 1, randomIndex) : base;
+  return drawMatchCards(base, handId, 1, now + 1, randomIndex, { allowReshuffle, actionId, labelPrefix: "安全补牌" });
+}
+
+export function undoCardAction(match: BilliardsMatch, eventId: string): BilliardsMatch {
+  if (!match.cards || match.status !== "active") return match;
+  const target = match.cards.events.find((event) => event.id === eventId);
+  if (!target) return match;
+  const actionEvents = match.cards.events.filter((event) => target.actionId ? event.actionId === target.actionId : event.id === eventId);
+  let remaining = [...match.cards.remaining];
+  const hands = Object.fromEntries(Object.entries(match.cards.hands).map(([id, hand]) => [id, [...hand]]));
+  let used = [...match.cards.used];
+  let skipped = [...match.cards.skipped];
+  actionEvents.forEach((event) => {
+    if (event.type === "draw" && event.card) {
+      hands[event.handId] = (hands[event.handId] ?? []).filter((card) => card.instanceId !== event.card!.instanceId);
+      remaining = [event.card, ...remaining];
+    } else if (event.type === "play" && event.card) {
+      used = used.filter((card) => card.instanceId !== event.card!.instanceId);
+      hands[event.handId] = [event.card, ...(hands[event.handId] ?? [])];
+    } else if (event.type === "skip" && event.card) {
+      skipped = skipped.filter((card) => card.instanceId !== event.card!.instanceId);
+      hands[event.handId] = [event.card, ...(hands[event.handId] ?? [])];
+    } else if (event.type === "reshuffle") {
+      const recycledIds = new Set([...(event.reshuffledUsed ?? []), ...(event.reshuffledSkipped ?? [])].map((card) => card.instanceId));
+      remaining = remaining.filter((card) => !recycledIds.has(card.instanceId));
+      used = [...(event.reshuffledUsed ?? []), ...used];
+      skipped = [...(event.reshuffledSkipped ?? []), ...skipped];
+    }
+  });
+  const relatedScoreIds = new Set(actionEvents.map((event) => event.relatedScoreEventId).filter((id): id is string => !!id));
+  const relatedScores = match.scoreEvents.filter((event) => relatedScoreIds.has(event.id));
+  return {
+    ...match,
+    players: match.players.map((player) => ({ ...player, score: player.score - relatedScores.reduce((sum, event) => sum + (event.changes[player.id] ?? 0), 0) })),
+    scoreEvents: match.scoreEvents.filter((event) => !relatedScoreIds.has(event.id)),
+    cards: { ...match.cards, remaining, hands, used, skipped, events: match.cards.events.filter((event) => !actionEvents.some((item) => item.id === event.id)) },
+  };
 }
 
 export function getRankings(match: BilliardsMatch): MatchPlayer[] {

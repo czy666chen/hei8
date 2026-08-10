@@ -100,6 +100,35 @@ test("R2 转账计分由每名输家支付固定分数", async ({ page }) => {
   await expect(page.locator(".ledger-row").first()).toContainText("两位输家各付 10");
 });
 
+test("R2 高级抽牌与牌分联动可撤销并进入统一历史", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /追分 \+ 奇招牌/ }).click();
+  await page.getByLabel("自动补牌策略").selectOption("after_play");
+  await page.getByLabel("卡牌最高安全等级").selectOption("low");
+  await page.getByRole("checkbox", { name: "身体动作" }).check();
+  await page.getByRole("button", { name: /下一步：确认规则/ }).click();
+  await page.getByRole("button", { name: /确认并开始/ }).click();
+  const initialCards = await page.locator(".trick-card").count();
+  await page.getByLabel("卡牌关联分值").fill("6");
+  await page.getByLabel("卡牌关联计分备注").fill("奇招奖励");
+  await page.locator(".trick-card").first().getByRole("button", { name: "使用此卡" }).click();
+  await expect(page.locator(".trick-card")).toHaveCount(initialCards);
+  await expect(page.locator(".ledger-row").first()).toContainText("卡牌");
+  await page.locator(".card-log summary").click();
+  await expect(page.locator(".card-log")).toContainText("已关联积分");
+  await page.locator(".card-log > div").first().getByRole("button", { name: "撤销" }).click();
+  await expect(page.locator(".ledger-row")).toHaveCount(0);
+  await expect(page.locator(".trick-card")).toHaveCount(initialCards);
+
+  await page.getByLabel("卡牌关联分值").fill("8");
+  await page.locator(".trick-card").first().getByRole("button", { name: "使用此卡" }).click();
+  await page.getByRole("button", { name: "结束对局" }).click();
+  await page.getByRole("button", { name: "确认结束并保存" }).click();
+  await expect(page.getByRole("heading", { name: "真实发生顺序" })).toBeVisible();
+  await expect(page.locator(".timeline-row.unified.score")).toContainText("查看关联卡牌");
+  await expect(page.locator(".timeline-row.unified.card").filter({ hasText: "查看关联积分" })).toBeVisible();
+});
+
 test("损坏的本机数据不会被静默覆盖", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("billiards-club-assistant:v1", "{broken-json"));
   await page.goto("/");

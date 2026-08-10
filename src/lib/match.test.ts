@@ -18,7 +18,10 @@ import {
   playMatchCard,
   skipMatchCard,
   setCurrentPlayer,
+  triggerMatchCardRefill,
+  undoCardAction,
   undoLastScore,
+  updateMatchCardSettings,
 } from "./match";
 
 const first = () => 0;
@@ -195,5 +198,60 @@ describe("追分与奇招牌组合", () => {
     const skipped = skipMatchCard(custom, "shared", risk.instanceId, 200, first);
     expect(skipped.cards!.skipped[0].instanceId).toBe(risk.instanceId);
     expect(skipped.cards!.hands.shared).toHaveLength(1);
+  });
+
+  it.each(["game", "round"] as const)("%s 自动补牌补至手牌上限", (policy) => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 0, cardAutoDrawPolicy: policy, cardHandLimit: 3 }, 100, first);
+    const refilled = triggerMatchCardRefill(match, policy, 200, first);
+    expect(refilled.cards!.hands.shared).toHaveLength(3);
+    expect(refilled.cards!.events.filter((event) => event.type === "draw")).toHaveLength(3);
+  });
+
+  it("用牌后自动补牌且手牌上限阻止额外手动抽牌", () => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 1, cardAutoDrawPolicy: "after_play", cardHandLimit: 1 }, 100, first);
+    const target = match.cards!.hands.shared[0];
+    const played = playMatchCard(match, "shared", target.instanceId, 200, undefined, first);
+    expect(played.cards!.hands.shared).toHaveLength(1);
+    expect(played.cards!.events.slice(0, 2).map((event) => event.type)).toEqual(["draw", "play"]);
+    expect(drawMatchCards(played, "shared", 1, 300, first)).toBe(played);
+  });
+
+  it("可在对局中调整补牌策略和手牌上限", () => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 1 }, 100, first);
+    const updated = updateMatchCardSettings(match, { autoDrawPolicy: "round", handLimit: 4, exhaustionPolicy: "reshuffle" });
+    expect(updated.cards).toMatchObject({ autoDrawPolicy: "round", handLimit: 4, exhaustionPolicy: "reshuffle" });
+  });
+
+  it("牌库耗尽默认停止，确认后可重洗弃牌", () => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 0, cardHandLimit: 2, cardExhaustionPolicy: "reshuffle" }, 100, first);
+    const recycled = match.cards!.remaining[0];
+    const exhausted = { ...match, cards: { ...match.cards!, remaining: [], used: [recycled], hands: { shared: [] } } };
+    expect(drawMatchCards(exhausted, "shared", 1, 200, first)).toBe(exhausted);
+    const reshuffled = drawMatchCards(exhausted, "shared", 1, 200, first, { allowReshuffle: true });
+    expect(reshuffled.cards!.hands.shared[0].instanceId).toBe(recycled.instanceId);
+    expect(reshuffled.cards!.events.some((event) => event.type === "reshuffle")).toBe(true);
+  });
+
+  it("按安全等级、类别和关键词过滤并固化牌组快照", () => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 0, cardFilter: { excludedCategories: ["social"], maxSafetyLevel: "low", excludedKeywords: ["红包"] } }, 100, first);
+    const allCards = match.cards!.remaining;
+    expect(allCards.every((card) => !card.safetyNote && !card.effect.includes("红包"))).toBe(true);
+    expect(match.cards!.deckSnapshot.filter).toMatchObject({ excludedCategories: ["social"], maxSafetyLevel: "low", excludedKeywords: ["红包"] });
+  });
+
+  it("卡牌计分双向关联，撤销时同时恢复积分、手牌和流水", () => {
+    const match = createMatch({ ...draft, mode: "score_cards", cardMode: "shared", initialHandSize: 1 }, 100, first);
+    const target = match.cards!.hands.shared[0];
+    const played = playMatchCard(match, "shared", target.instanceId, 200, { playerId: match.players[0].id, delta: 7, note: "卡牌奖励" }, first);
+    const playEvent = played.cards!.events.find((event) => event.type === "play")!;
+    expect(played.players[0].score).toBe(107);
+    expect(played.scoreEvents[0].linkedCardEventId).toBe(playEvent.id);
+    expect(playEvent.relatedScoreEventId).toBe(played.scoreEvents[0].id);
+    expect(played.scoreEvents[0].occurredAt).toBeGreaterThan(playEvent.occurredAt);
+    const undone = undoCardAction(played, playEvent.id);
+    expect(undone.players[0].score).toBe(100);
+    expect(undone.scoreEvents).toHaveLength(0);
+    expect(undone.cards!.hands.shared.some((card) => card.instanceId === target.instanceId)).toBe(true);
+    expect(undone.cards!.used).toHaveLength(0);
   });
 });
