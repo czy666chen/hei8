@@ -58,7 +58,7 @@ test("未结束对局可保存后新建并恢复", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "发现未结束对局" })).toBeVisible();
   await page.getByRole("button", { name: "保存当前对局后新建" }).click();
   await page.getByRole("button", { name: "关闭" }).click();
-  await page.getByRole("button", { name: "对局" }).click();
+  await page.getByRole("button", { name: "返回对局首页" }).click();
   await expect(page.getByRole("heading", { name: "继续未结束对局" })).toBeVisible();
   await page.getByRole("button", { name: /继续 →/ }).click();
   await expect(page.locator(".live-label")).toHaveText(/对局进行中/);
