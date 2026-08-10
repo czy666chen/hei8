@@ -1,6 +1,6 @@
 {
   "name": "site-creator-vinext-starter",
-  "version": "0.1.0",
+  "version": "4.0.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -12,6 +12,7 @@
     "build:static": "vite build --config vite.static.config.ts",
     "start": "vinext start",
     "test": "vitest run --config vitest.config.ts",
+    "test:e2e": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -35,9 +37,9 @@
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vitest": "3.2.4",
     "vinext": "0.0.50",
     "vite": "8.0.13",
+    "vitest": "3.2.4",
     "wrangler": "4.92.0"
   },
   "type": "module"

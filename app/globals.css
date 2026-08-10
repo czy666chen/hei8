@@ -16,6 +16,40 @@
   --shadow: 0 20px 70px #0007;
 }
 
+/* R1: recoverable sessions, official deck snapshots, and data-protection dialogs */
+.paused-matches { display: grid; grid-template-columns: 180px repeat(2, 1fr); gap: 12px; align-items: stretch; padding: 24px 0; border-top: 1px solid var(--line-soft); }
+.paused-matches h2 { margin: 4px 0 0; font-size: 20px; }
+.paused-matches > button { display: grid; gap: 6px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; text-align: left; background: #0d1914; }
+.paused-matches > button small { color: var(--muted); }
+.paused-matches > button span { color: var(--mint); font-size: 11px; font-weight: 800; }
+.deck-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.deck-picker button { display: grid; gap: 4px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; text-align: left; background: #101e18; }
+.deck-picker button.active { border-color: var(--mint); box-shadow: inset 0 0 0 1px #79f5bd33; }
+.deck-picker b { font-size: 12px; }
+.deck-picker small { color: var(--mint); font-size: 9px; }
+.deck-picker span { color: var(--muted); font-size: 9px; line-height: 1.5; }
+.protection-actions { display: grid; gap: 9px; }
+.protection-actions button { min-height: 46px; }
+.danger-text { color: var(--red); }
+.audit-note { display: block; margin-top: 12px; color: var(--gold); line-height: 1.5; }
+.official-deck-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 30px; }
+.official-deck-grid .official-deck { grid-template-columns: 100px 1fr; margin-bottom: 0; padding: 20px; }
+.official-deck-grid .official-art { height: 120px; }
+.official-deck-grid .official-art span { width: 62px; height: 62px; font-size: 28px; }
+.official-deck-grid .official-deck h2 { font-size: 23px; }
+.official-deck-grid .tag-row { flex-wrap: wrap; }
+
+@media (max-width: 900px) {
+  .paused-matches { grid-template-columns: 1fr 1fr; }
+  .paused-matches > div { grid-column: 1 / -1; }
+  .official-deck-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 620px) {
+  .deck-picker, .paused-matches { grid-template-columns: 1fr; }
+  .paused-matches > div { grid-column: auto; }
+}
+
 * { box-sizing: border-box; }
 html { color-scheme: dark; scroll-behavior: smooth; }
 body { margin: 0; color: var(--text); background: var(--bg); font-family: "Noto Sans SC", system-ui, sans-serif; }

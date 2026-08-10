@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { CARD_DEFINITIONS } from "../src/data/cards";
 import { GameState, loadGameState } from "../src/lib/deck";
+import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId } from "../src/lib/official-decks";
 import {
   applyScore,
   BilliardsMatch,
@@ -24,15 +25,20 @@ import {
 const APP_STORAGE_KEY = "billiards-club-assistant:v1";
 const CARD_STORAGE_KEY = "billiards-trick-cards:v2";
 const LEGACY_CARD_STORAGE_KEY = "neon-pool-cards:v1";
+const APP_VERSION = "4.0.0";
 
 type AppData = {
   version: 1;
   activeMatch: BilliardsMatch | null;
   history: BilliardsMatch[];
   savedRules: ScoreRule[];
+  pausedMatches: BilliardsMatch[];
+  recoverySnapshots: { match: BilliardsMatch; abandonedAt: number; reason: string }[];
 };
 
-const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES };
+type StorageIssue = { message: string; raw: string };
+
+const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES, pausedMatches: [], recoverySnapshots: [] };
 
 const NAV_ITEMS = [
   { path: "/", label: "对局", icon: "◎" },
@@ -70,32 +76,53 @@ function migrateLegacyCardMatch(state: GameState): BilliardsMatch {
       skipped: state.discarded.map((record) => record.card),
       events: [],
       initialHandSize: shared ? state.settings.sharedHandSize : state.settings.playerAHandSize,
+      deckSnapshot: {
+        id: "complete",
+        version: 1,
+        name: "完整奇招",
+        definitionIds: [...getOfficialDeck("complete").definitionIds],
+        cardCount: 51,
+      },
     },
   };
 }
 
-function loadAppData(): AppData {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(APP_STORAGE_KEY) ?? "null");
-    if (parsed && typeof parsed === "object") {
-      const data = parsed as Partial<AppData>;
-      if (data.version === 1 && Array.isArray(data.history)) {
-        return {
-          version: 1,
-          activeMatch: isStoredMatch(data.activeMatch) ? data.activeMatch : null,
-          history: data.history.filter(isStoredMatch),
-          savedRules: Array.isArray(data.savedRules) ? data.savedRules : DEFAULT_RULES,
-        };
-      }
+function parseAppData(raw: string | null): AppData | null {
+  if (!raw) return null;
+  const parsed: unknown = JSON.parse(raw);
+  if (parsed && typeof parsed === "object") {
+    const data = parsed as Partial<AppData>;
+    if (data.version === 1 && Array.isArray(data.history)) {
+      return {
+        version: 1,
+        activeMatch: isStoredMatch(data.activeMatch) ? data.activeMatch : null,
+        history: data.history.filter(isStoredMatch),
+        savedRules: Array.isArray(data.savedRules) ? data.savedRules : DEFAULT_RULES,
+        pausedMatches: Array.isArray(data.pausedMatches) ? data.pausedMatches.filter(isStoredMatch) : [],
+        recoverySnapshots: Array.isArray(data.recoverySnapshots)
+          ? data.recoverySnapshots.filter((item) => item && isStoredMatch(item.match))
+          : [],
+      };
     }
-  } catch { /* keep the recoverable legacy data untouched */ }
+  }
+  throw new Error("数据格式或版本无法识别");
+}
+
+function loadAppData(): { data: AppData; issue?: StorageIssue } {
+  const raw = localStorage.getItem(APP_STORAGE_KEY);
+  try {
+    const parsed = parseAppData(raw);
+    if (parsed) return { data: parsed };
+  } catch (error) {
+    return { data: EMPTY_DATA, issue: { message: error instanceof Error ? error.message : "本机数据读取失败", raw: raw ?? "" } };
+  }
   const legacy = loadGameState(localStorage.getItem(CARD_STORAGE_KEY))
     ?? loadGameState(localStorage.getItem(LEGACY_CARD_STORAGE_KEY));
   const hasLegacyGame = legacy && (
     legacy.used.length > 0 || legacy.discarded.length > 0 ||
     Object.values(legacy.hands).some((hand) => hand.length > 0)
   );
-  return hasLegacyGame ? { ...EMPTY_DATA, activeMatch: migrateLegacyCardMatch(legacy) } : EMPTY_DATA;
+  return { data: hasLegacyGame ? { ...EMPTY_DATA, activeMatch: migrateLegacyCardMatch(legacy) } : EMPTY_DATA };
 }
 
 function formatTime(timestamp: number) {
@@ -134,7 +161,7 @@ function AppHeader({ path, active, onNavigate }: { path: string; active: boolean
   );
 }
 
-function EmptyHome({ onStart, onNavigate, recent }: { onStart: (mode: MatchMode) => void; onNavigate: (path: string) => void; recent?: BilliardsMatch }) {
+function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart: (mode: MatchMode) => void; onNavigate: (path: string) => void; onResume: (id: string) => void; recent?: BilliardsMatch; paused: BilliardsMatch[] }) {
   return (
     <div className="home-page page-shell">
       <section className="welcome-panel">
@@ -154,6 +181,8 @@ function EmptyHome({ onStart, onNavigate, recent }: { onStart: (mode: MatchMode)
           <div className="float-card card-two"><small>LIVE SCORE</small><b>+ 20</b><span>小金</span></div>
         </div>
       </section>
+
+      {!!paused.length && <section className="paused-matches" aria-label="已保存的未结束对局"><div><p className="kicker">SAVED MATCHES</p><h2>继续未结束对局</h2></div>{paused.map((match) => <button key={match.id} onClick={() => onResume(match.id)}><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {match.scoreEvents.length} 笔计分</small><span>继续 →</span></button>)}</section>}
 
       <section className="quick-grid" aria-label="快速开始">
         <button onClick={() => onStart("score")}><span className="quick-icon mint">＋</span><div><b>多人追分</b><small>2–8 人 · 分值可配 · 自动排名</small></div><i>→</i></button>
@@ -178,9 +207,12 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
   const [rules, setRules] = useState(savedRules.map((rule) => ({ ...rule })));
   const [cardMode, setCardMode] = useState<CardMode>(initialMode === "score" ? "none" : "shared");
   const [handSize, setHandSize] = useState(3);
+  const [deckId, setDeckId] = useState<OfficialDeckId>("complete");
   const [reviewing, setReviewing] = useState(false);
   const [savePreset, setSavePreset] = useState(false);
   const scoreEnabled = initialMode !== "cards";
+  const selectedDeck = getOfficialDeck(deckId);
+  const selectedDeckCount = officialDeckCardCount(selectedDeck);
   const validNames = names.map((name) => name.trim()).filter(Boolean);
   const valid = validNames.length >= 2 && validNames.length <= 8 && rules.every((rule) => Number.isFinite(rule.value) && rule.value >= 0);
 
@@ -200,7 +232,8 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
     initialScore,
     rules,
     cardMode: initialMode === "cards" && cardMode === "none" ? "shared" : cardMode,
-    initialHandSize: cardMode === "independent" ? Math.min(handSize, Math.floor(51 / validNames.length)) : handSize,
+    initialHandSize: cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize,
+    deckId,
   }, savePreset);
 
   return (
@@ -249,7 +282,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
                 <button className={cardMode === "shared" ? "active" : ""} onClick={() => setCardMode("shared")}>共用手牌</button>
                 <button className={cardMode === "independent" ? "active" : ""} onClick={() => setCardMode("independent")}>独立手牌</button>
               </div>
-              {cardMode !== "none" && <label className="initial-score"><span>{cardMode === "shared" ? "共用起始手牌" : "每人起始手牌"}</span><input type="number" min="0" max="10" inputMode="numeric" value={handSize} onChange={(event) => setHandSize(Number(event.target.value))} /><small>使用完整奇招 · 51 张实体牌</small></label>}
+              {cardMode !== "none" && <><div className="deck-picker" aria-label="选择官方牌组">{OFFICIAL_DECKS.map((deck) => <button key={deck.id} className={deckId === deck.id ? "active" : ""} onClick={() => setDeckId(deck.id)}><b>{deck.name}</b><small>{officialDeckCardCount(deck)} 张 · {deck.difficulty}</small><span>{deck.description}</span></button>)}</div><label className="initial-score"><span>{cardMode === "shared" ? "共用起始手牌" : "每人起始手牌"}</span><input type="number" min="0" max="10" inputMode="numeric" value={handSize} onChange={(event) => setHandSize(Number(event.target.value))} /><small>{selectedDeck.name} · {selectedDeckCount} 张实体牌</small></label></>}
               <aside className="safety-callout"><span>!</span><p><b>安全跳过机制已启用</b>危险动作或身体不适时，双方同意即可跳过并自动补抽，不计犯规。</p></aside>
             </section>
           </div>
@@ -257,7 +290,7 @@ function SetupDialog({ initialMode, savedRules, onClose, onStart }: { initialMod
           <div className="review-card">
             <div><span>玩家与顺序</span><b>{validNames.map((name, index) => `${index + 1}. ${name}`).join("　")}</b></div>
             {scoreEnabled && <><div><span>初始积分</span><b>{initialScore} 分 / 人</b></div><div><span>计分项目</span><b>{rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ")}</b></div></>}
-            <div><span>奇招牌</span><b>{cardMode === "none" ? "不启用" : `${cardMode === "shared" ? "共用手牌" : "独立手牌"} · 起始 ${cardMode === "independent" ? Math.min(handSize, Math.floor(51 / validNames.length)) : handSize} 张`}</b></div>
+            <div><span>奇招牌</span><b>{cardMode === "none" ? "不启用" : `${selectedDeck.name} V${selectedDeck.version} · ${selectedDeckCount} 张快照 · ${cardMode === "shared" ? "共用手牌" : "独立手牌"} · 起始 ${cardMode === "independent" ? Math.min(handSize, Math.floor(selectedDeckCount / validNames.length)) : handSize} 张`}</b></div>
             <aside className="safety-callout"><span>✓</span><p><b>规则快照将在开局时保存</b>后续修改默认规则，不会影响本场对局记录。</p></aside>
           </div>
         )}
@@ -350,10 +383,10 @@ function ActiveMatchView({ match, onChange, onFinish, toast }: { match: Billiard
   return (
     <div className="match-page page-shell">
       <section className="match-banner">
-        <div><span className="live-label"><i /> 对局进行中</span><h1>{match.mode === "cards" ? "奇招卡牌局" : match.mode === "score_cards" ? "追分 · 奇招牌" : "多人追分"}</h1><p>{match.players.length} 位玩家 · {formatDuration(match.startedAt)}{match.cards ? ` · 完整奇招牌` : ""}</p></div>
+        <div><span className="live-label"><i /> 对局进行中</span><h1>{match.mode === "cards" ? "奇招卡牌局" : match.mode === "score_cards" ? "追分 · 奇招牌" : "多人追分"}</h1><p>{match.players.length} 位玩家 · {formatDuration(match.startedAt)}{match.cards ? ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"}` : ""}</p></div>
         <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" onClick={onFinish}>结束对局</button></div>
       </section>
-      {moreOpen && <section className="match-info"><div><span>玩家顺序</span><b>{match.players.map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name}</b></div><div><span>规则快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}</b></div></section>}
+      {moreOpen && <section className="match-info"><div><span>玩家顺序</span><b>{match.players.map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section>}
       {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
       {match.cards && <CardBoard match={match} onChange={onChange} toast={toast} />}
       <div className="match-dock"><button disabled={!match.scoreEvents.length} onClick={() => onChange(undoLastScore(match))}>↶<span>撤销</span></button><button className="dock-main" onClick={() => match.cards ? document.querySelector(".card-board")?.scrollIntoView({ behavior: "smooth" }) : document.querySelector(".scoring-panel")?.scrollIntoView({ behavior: "smooth" })}>{match.cards ? "抽牌" : "记分"}</button><button onClick={() => setMoreOpen(!moreOpen)}>•••<span>更多</span></button></div>
@@ -372,7 +405,7 @@ function PlayPage({ onStart }: { onStart: (mode: MatchMode) => void }) {
 function DecksPage() {
   const [query, setQuery] = useState("");
   const cards = CARD_DEFINITIONS.filter((card) => `${card.title}${card.effect}`.toLowerCase().includes(query.trim().toLowerCase()));
-  return <div className="content-page page-shell"><header className="page-title split"><div><p className="kicker">DECK LIBRARY</p><h1>牌组</h1><p>官方牌组可直接开局，自定义牌组将在下一阶段开放。</p></div><div className="deck-summary"><span>50<small>种规则</small></span><span>51<small>张实体牌</small></span></div></header><section className="official-deck"><div className="official-art"><span>8</span></div><div><p className="kicker">OFFICIAL · V1</p><h2>完整奇招</h2><p>包含全部 50 种规则。两张“无懈可击”作为独立实体实例保留，两张同名“落井下石”对应不同规则。</p><div className="tag-row"><span>安全提示</span><span>不放回抽取</span><span>可跳过补抽</span></div></div></section><section className="card-catalog"><div className="section-heading"><div><p className="kicker">ALL CARDS</p><h2>完整卡牌清单</h2></div><label className="search"><span>⌕</span><input type="search" placeholder="搜索名称或效果" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><div className="catalog-list">{cards.map((card) => <article key={card.id}><span>{card.id.slice(-3)}</span><div><b>{card.title}{card.count > 1 && <em> ×{card.count}</em>}</b><p>{card.effect}</p>{card.safetyNote && <small>! {card.safetyNote}</small>}</div></article>)}</div></section></div>;
+  return <div className="content-page page-shell"><header className="page-title split"><div><p className="kicker">DECK LIBRARY</p><h1>牌组</h1><p>四个官方牌组均按版本保存完整快照，后续更新不会改变旧战绩。</p></div><div className="deck-summary"><span>4<small>官方牌组</small></span><span>V1<small>当前版本</small></span></div></header><div className="official-deck-grid">{OFFICIAL_DECKS.map((deck) => <section className="official-deck" key={deck.id}><div className="official-art"><span>8</span></div><div><p className="kicker">OFFICIAL · V{deck.version}</p><h2>{deck.name}</h2><p>{deck.description}</p><div className="tag-row"><span>{officialDeckCardCount(deck)} 张</span><span>{deck.difficulty}</span><span>{deck.safety}</span></div></div></section>)}</div><section className="card-catalog"><div className="section-heading"><div><p className="kicker">ALL CARDS</p><h2>完整卡牌清单</h2></div><label className="search"><span>⌕</span><input type="search" placeholder="搜索名称或效果" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><div className="catalog-list">{cards.map((card) => <article key={card.id}><span>{card.id.slice(-3)}</span><div><b>{card.title}{card.count > 1 && <em> ×{card.count}</em>}</b><p>{card.effect}</p>{card.safetyNote && <small>! {card.safetyNote}</small>}</div></article>)}</div></section></div>;
 }
 
 function HistoryPage({ history, selectedId, onSelect }: { history: BilliardsMatch[]; selectedId?: string; onSelect: (id: string) => void }) {
@@ -386,11 +419,19 @@ function HistoryPage({ history, selectedId, onSelect }: { history: BilliardsMatc
 }
 
 function ProfilePage({ history }: { history: BilliardsMatch[] }) {
-  return <div className="content-page page-shell"><header className="profile-hero"><span className="profile-avatar">游</span><div><p className="kicker">LOCAL GUEST</p><h1>游客模式</h1><p>核心功能无需注册，本机数据会持续保存。</p></div><button className="secondary" disabled>登录 / 注册 · 即将开放</button></header><section className="local-stats"><div><strong>{history.length}</strong><span>已完成对局</span></div><div><strong>{history.reduce((sum, match) => sum + match.scoreEvents.length, 0)}</strong><span>计分流水</span></div><div><strong>{history.reduce((sum, match) => sum + (match.cards?.events.length ?? 0), 0)}</strong><span>卡牌事件</span></div></section><section className="settings-list"><header><p className="kicker">LOCAL DATA</p><h2>本机资料</h2></header><div><span>◎</span><p><b>本地自动保存</b><small>刷新页面仍可恢复未结束对局</small></p><strong className="state-good">已开启</strong></div><div><span>⇅</span><p><b>云端同步</b><small>账户与跨设备同步将在认证阶段开放</small></p><strong>未连接</strong></div><div><span>○</span><p><b>常用球友</b><small>登录后保存注册玩家与临时球友</small></p><strong>即将开放</strong></div></section></div>;
+  return <div className="content-page page-shell"><header className="profile-hero"><span className="profile-avatar">游</span><div><p className="kicker">LOCAL GUEST · V{APP_VERSION}</p><h1>游客模式</h1><p>R2 本地核心功能版，核心能力无需注册，本机数据会持续保存。</p></div><button className="secondary" disabled>登录 / 注册 · 即将开放</button></header><section className="local-stats"><div><strong>{history.length}</strong><span>已完成对局</span></div><div><strong>{history.reduce((sum, match) => sum + match.scoreEvents.length, 0)}</strong><span>计分流水</span></div><div><strong>{history.reduce((sum, match) => sum + (match.cards?.events.length ?? 0), 0)}</strong><span>卡牌事件</span></div></section><section className="settings-list"><header><p className="kicker">LOCAL DATA</p><h2>本机资料</h2></header><div><span>4</span><p><b>R2 应用版本</b><small>当前预览版本 v{APP_VERSION}</small></p><strong className="state-good">预览中</strong></div><div><span>◎</span><p><b>本地自动保存</b><small>刷新页面仍可恢复未结束对局</small></p><strong className="state-good">已开启</strong></div><div><span>⇅</span><p><b>云端同步</b><small>账户与跨设备同步将在认证阶段开放</small></p><strong>未连接</strong></div><div><span>○</span><p><b>常用球友</b><small>登录后保存注册玩家与临时球友</small></p><strong>即将开放</strong></div></section></div>;
 }
 
 function ConfirmDialog({ title, body, onCancel, onConfirm }: { title: string; body: string; onCancel: () => void; onConfirm: () => void }) {
   return <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true"><span className="warning-icon">!</span><h2>{title}</h2><p>{body}</p><div className="modal-actions"><button className="secondary" onClick={onCancel}>继续对局</button><button className="danger-button" onClick={onConfirm}>确认结束并保存</button></div></section></div>;
+}
+
+function ActiveMatchProtectionDialog({ match, discardArmed, onContinue, onSave, onArmDiscard, onDiscard }: { match: BilliardsMatch; discardArmed: boolean; onContinue: () => void; onSave: () => void; onArmDiscard: () => void; onDiscard: () => void }) {
+  return <div className="modal-backdrop"><section className="confirm-modal protection-modal" role="alertdialog" aria-modal="true" aria-labelledby="protect-title"><span className="warning-icon">!</span><h2 id="protect-title">发现未结束对局</h2><p>{match.players.map((player) => player.name).join("、")} 的对局仍在进行。新建前请选择如何处理，旧对局不会被静默覆盖。</p><div className="protection-actions"><button className="primary" onClick={onContinue}>继续当前对局</button><button className="secondary" onClick={onSave}>保存当前对局后新建</button>{discardArmed ? <button className="danger-button" onClick={onDiscard}>再次确认：放弃并新建</button> : <button className="text-button danger-text" onClick={onArmDiscard}>放弃旧对局…</button>}</div>{discardArmed && <small className="audit-note">确认后仍会保留可恢复快照和放弃时间。</small>}</section></div>;
+}
+
+function StorageRecoveryDialog({ issue, onRetry, onReset }: { issue: StorageIssue; onRetry: () => void; onReset: () => void }) {
+  return <div className="modal-backdrop"><section className="confirm-modal protection-modal" role="alertdialog" aria-modal="true" aria-labelledby="recovery-title"><span className="warning-icon">!</span><h2 id="recovery-title">本机数据无法读取</h2><p>原因：{issue.message}。为防止静默丢失，应用已暂停写入。你可以重试，或先备份原始数据再安全重置。</p><div className="protection-actions"><button className="primary" onClick={onRetry}>重试读取</button><button className="danger-button" onClick={onReset}>备份并安全重置</button></div></section></div>;
 }
 
 export default function GameApp() {
@@ -399,13 +440,18 @@ export default function GameApp() {
   const [path, setPath] = useState("/");
   const [setupMode, setSetupMode] = useState<MatchMode | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
+  const [pendingMode, setPendingMode] = useState<MatchMode | null>(null);
+  const [discardArmed, setDiscardArmed] = useState(false);
+  const [storageIssue, setStorageIssue] = useState<StorageIssue | null>(null);
   const [status, setStatus] = useState("");
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname || "/");
     window.addEventListener("popstate", onPopState);
     const frame = window.requestAnimationFrame(() => {
-      setData(loadAppData());
+      const loaded = loadAppData();
+      setData(loaded.data);
+      setStorageIssue(loaded.issue ?? null);
       setPath(window.location.pathname || "/");
       setReady(true);
     });
@@ -416,8 +462,8 @@ export default function GameApp() {
   }, []);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(data));
-  }, [data, ready]);
+    if (ready && !storageIssue) localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(data));
+  }, [data, ready, storageIssue]);
 
   useEffect(() => {
     if (!status) return;
@@ -452,17 +498,56 @@ export default function GameApp() {
 
   const openSetup = (mode: MatchMode) => {
     if (data.activeMatch) {
-      navigate("/");
-      setStatus("已有进行中的对局，请先继续或结束本局");
+      setPendingMode(mode);
+      setDiscardArmed(false);
       return;
     }
     setSetupMode(mode);
   };
 
+  const continueActive = () => { setPendingMode(null); setDiscardArmed(false); navigate("/"); };
+  const saveActiveAndCreate = () => {
+    if (!data.activeMatch || !pendingMode) return;
+    const mode = pendingMode;
+    setData({ ...data, activeMatch: null, pausedMatches: [data.activeMatch, ...data.pausedMatches] });
+    setPendingMode(null);
+    setDiscardArmed(false);
+    setSetupMode(mode);
+  };
+  const abandonActiveAndCreate = () => {
+    if (!data.activeMatch || !pendingMode) return;
+    const mode = pendingMode;
+    setData({ ...data, activeMatch: null, recoverySnapshots: [{ match: data.activeMatch, abandonedAt: Date.now(), reason: "用户二次确认后放弃并新建" }, ...data.recoverySnapshots].slice(0, 10) });
+    setPendingMode(null);
+    setDiscardArmed(false);
+    setSetupMode(mode);
+  };
+  const resumePaused = (id: string) => {
+    const selected = data.pausedMatches.find((match) => match.id === id);
+    if (!selected || data.activeMatch) return;
+    setData({ ...data, activeMatch: selected, pausedMatches: data.pausedMatches.filter((match) => match.id !== id) });
+    navigate("/");
+    setStatus("已恢复保存的未结束对局");
+  };
+  const retryStorage = () => {
+    const loaded = loadAppData();
+    setData(loaded.data);
+    setStorageIssue(loaded.issue ?? null);
+    if (!loaded.issue) setStatus("本机数据已恢复");
+  };
+  const resetStorage = () => {
+    if (!storageIssue) return;
+    localStorage.setItem(`${APP_STORAGE_KEY}:corrupt-backup:${Date.now()}`, storageIssue.raw);
+    localStorage.removeItem(APP_STORAGE_KEY);
+    setData(EMPTY_DATA);
+    setStorageIssue(null);
+    setStatus("原始数据已备份，本机数据已安全重置");
+  };
+
   const page = (() => {
     if (path === "/") return data.activeMatch
       ? <ActiveMatchView match={data.activeMatch} onChange={updateActive} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
-      : <EmptyHome onStart={openSetup} onNavigate={navigate} recent={data.history[0]} />;
+      : <EmptyHome onStart={openSetup} onNavigate={navigate} onResume={resumePaused} recent={data.history[0]} paused={data.pausedMatches} />;
     if (path === "/play") return <PlayPage onStart={openSetup} />;
     if (path === "/decks") return <DecksPage />;
     if (path.startsWith("/history")) return <HistoryPage history={data.history} selectedId={path.split("/")[2]} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />;
@@ -478,6 +563,8 @@ export default function GameApp() {
       {page}
       {setupMode && <SetupDialog initialMode={setupMode} savedRules={data.savedRules} onClose={() => setSetupMode(null)} onStart={start} />}
       {confirmEnd && <ConfirmDialog title="结束本场对局？" body="系统会保存最终排名、规则快照、计分流水和卡牌记录。结束后本场默认只读。" onCancel={() => setConfirmEnd(false)} onConfirm={complete} />}
+      {pendingMode && data.activeMatch && <ActiveMatchProtectionDialog match={data.activeMatch} discardArmed={discardArmed} onContinue={continueActive} onSave={saveActiveAndCreate} onArmDiscard={() => setDiscardArmed(true)} onDiscard={abandonActiveAndCreate} />}
+      {storageIssue && <StorageRecoveryDialog issue={storageIssue} onRetry={retryStorage} onReset={resetStorage} />}
       {status && <div className="status-toast" role="status"><span>✓</span>{status}</div>}
     </main>
   );
