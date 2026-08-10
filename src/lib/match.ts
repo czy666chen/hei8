@@ -24,6 +24,8 @@ export interface ScoreRule {
   kind: ScoreRuleKind;
   enabled: boolean;
   color: string;
+  description?: string;
+  custom?: boolean;
 }
 
 export interface ScoreEvent {
@@ -229,6 +231,14 @@ export function applyTransferScore(match: BilliardsMatch, winnerId: string, lose
     currentPlayerId: (match.turnStrategy ?? "fixed") === "winner_stays" ? winnerId : nextPlayerId(match),
     scoreEvents: [event, ...match.scoreEvents],
   };
+}
+
+export function correctScoreEvent(match: BilliardsMatch, eventId: string, note: string, now = Date.now()): BilliardsMatch {
+  const original = match.scoreEvents.find((event) => event.id === eventId && event.type !== "correction");
+  if (!original || match.status !== "active" || match.scoreEvents.some((event) => event.correctsEventId === eventId)) return match;
+  const changes = Object.fromEntries(Object.entries(original.changes).map(([playerId, value]) => [playerId, -value]));
+  const correction: ScoreEvent = { id: makeId("correction", now), type: "correction", label: `更正 · ${original.label}`, playerId: original.playerId, changes, previousCurrentPlayerId: match.currentPlayerId, occurredAt: now, correctsEventId: original.id, note: note.trim() || "撤销错误事件" };
+  return { ...match, players: match.players.map((player) => ({ ...player, score: player.score + (changes[player.id] ?? 0) })), scoreEvents: [correction, ...match.scoreEvents] };
 }
 
 export function undoLastScore(match: BilliardsMatch): BilliardsMatch {

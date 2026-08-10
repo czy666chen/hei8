@@ -4,6 +4,7 @@ import {
   applyScore,
   applyTransferScore,
   createMatch,
+  correctScoreEvent,
   deleteMatchPlayer,
   DEFAULT_RULES,
   drawMatchCards,
@@ -96,6 +97,17 @@ describe("追分对局", () => {
     expect(transferred.players.reduce((sum, player) => sum + player.score, 0)).toBe(totalBefore);
     expect(transferred.scoreEvents[0]).toMatchObject({ type: "transfer", note: "两位输家各付 10" });
     expect(undoLastScore(transferred).players.map((player) => player.score)).toEqual([100, 100, 100]);
+  });
+
+  it("事件更正保留原流水并追加关联反向事件", () => {
+    const match = createMatch(draft, 100, first);
+    const scored = applyScore(match, "normal-win", match.players[0].id, 200);
+    const corrected = correctScoreEvent(scored, scored.scoreEvents[0].id, "记错玩家", 300);
+    expect(corrected.players[0].score).toBe(100);
+    expect(corrected.scoreEvents).toHaveLength(2);
+    expect(corrected.scoreEvents[0]).toMatchObject({ type: "correction", correctsEventId: scored.scoreEvents[0].id, note: "记错玩家" });
+    expect(corrected.scoreEvents[1]).toEqual(scored.scoreEvents[0]);
+    expect(correctScoreEvent(corrected, scored.scoreEvents[0].id, "重复", 400)).toBe(corrected);
   });
 
   it("结算后保存确定排名", () => {
