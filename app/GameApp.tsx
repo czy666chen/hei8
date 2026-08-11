@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CARD_DEFINITIONS, CardCategory } from "../src/data/cards";
 import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId } from "../src/lib/official-decks";
 import {
@@ -23,6 +23,7 @@ import {
   getPlayerAvatarColor,
   getRankings,
   hasPlayerActivity,
+  isStoredMatch,
   leaveMatchPlayer,
   MatchDraft,
   MatchMode,
@@ -50,6 +51,7 @@ import {
   EightBallWinType,
   finishEightBallMatch,
   getEffectiveEightBallRounds,
+  isEightBallMatch,
   pauseEightBallMatch,
   recordEightBallRound,
   renameEightBallPlayer,
@@ -76,8 +78,14 @@ import {
   recordMigrationUpload,
   uploadLocalMigration,
 } from "../src/lib/local-migration";
+import {
+  enqueueMigrationResources,
+  flushSyncQueue,
+  retrySyncQueue,
+  syncQueueSummary,
+} from "../src/lib/cloud-sync";
 
-const APP_VERSION = "4.1.0";
+const APP_VERSION = "5.0.0-rc.1";
 
 const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
 
@@ -88,6 +96,21 @@ const NAV_ITEMS = [
   { path: "/history", label: "战绩", icon: "⌁" },
   { path: "/profile", label: "我的", icon: "○" },
 ];
+
+type AuthUser = { id: string; username: string; publicCode: string; nickname: string; avatarUrl: string | null };
+type SyncView = {
+  state: "local" | "pending" | "syncing" | "synced" | "failed" | "readonly";
+  pending: number;
+  message: string;
+};
+
+const LOCAL_SYNC_VIEW: SyncView = { state: "local", pending: 0, message: "仅保存在本机" };
+
+async function apiPayload<T>(response: Response): Promise<T> {
+  const payload = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
+  return payload;
+}
 
 function browserStore() {
   return new VersionedLocalStore(new BrowserStorageAdapter(window.localStorage));
@@ -102,7 +125,7 @@ function formatDuration(startedAt: number, endedAt = Date.now()) {
   return minutes < 60 ? `${minutes} 分钟` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
-function AppHeader({ path, active, onNavigate }: { path: string; active: boolean; onNavigate: (path: string) => void }) {
+function AppHeader({ path, active, user, sync, onNavigate }: { path: string; active: boolean; user: AuthUser | null; sync: SyncView; onNavigate: (path: string) => void }) {
   return (
     <>
       <header className="app-header">
@@ -116,7 +139,7 @@ function AppHeader({ path, active, onNavigate }: { path: string; active: boolean
             </button>
           ))}
         </nav>
-        <button className="guest-chip" onClick={() => onNavigate("/profile")}><span>游</span>游客模式</button>
+        <button className="guest-chip" onClick={() => onNavigate("/profile")}><span>{user?.nickname.slice(0, 1) || "游"}</span>{user ? user.nickname : "游客模式"}<i className={`sync-dot ${sync.state}`} /></button>
       </header>
       <nav className="mobile-nav" aria-label="手机主导航">
         {NAV_ITEMS.map((item) => (
@@ -486,16 +509,17 @@ function PlayerManager({ match, onChange, toast }: { match: BilliardsMatch; onCh
   return <section className="player-manager" aria-label="玩家管理"><header><div><p className="kicker">PLAYER CONTROL</p><h2>玩家与击球顺序</h2></div><div className="segmented strategy-switch"><button className={(match.turnStrategy ?? "fixed") === "fixed" ? "active" : ""} onClick={() => onChange({ ...match, turnStrategy: "fixed" })}>固定轮转</button><button className={match.turnStrategy === "winner_stays" ? "active" : ""} onClick={() => onChange({ ...match, turnStrategy: "winner_stays" })}>得分者继续</button></div></header><div className="manager-list">{activePlayers.map((player, index) => { const activity = hasPlayerActivity(match, player.id); return <article key={player.id} className={player.id === match.currentPlayerId ? "current" : ""}><span className="manager-order">{index + 1}</span><div><b>{player.name}</b><small>{player.id === match.currentPlayerId ? "当前击球" : `加入 ${formatTime(player.joinedAt ?? match.startedAt)}`} · {player.score} 分</small></div><div className="manager-actions"><button disabled={index === 0} onClick={() => move(player.id, -1)} aria-label={`${player.name}上移`}>↑</button><button disabled={index === activePlayers.length - 1} onClick={() => move(player.id, 1)} aria-label={`${player.name}下移`}>↓</button><button className="current-button" disabled={player.id === match.currentPlayerId} onClick={() => onChange(setCurrentPlayer(match, player.id))}>设为当前</button>{activity ? <button className="leave-button" disabled={activePlayers.length <= 2} onClick={() => { onChange(leaveMatchPlayer(match, player.id)); toast(`${player.name} 已离场，历史和最终分数已保留`); }}>离场</button> : <button className="leave-button" disabled={activePlayers.length <= 2} onClick={() => { onChange(deleteMatchPlayer(match, player.id)); toast(`${player.name} 尚无流水，已安全移除`); }}>移除</button>}</div></article>; })}</div>{!!departedPlayers.length && <details className="departed-list"><summary>已离场玩家 <span>{departedPlayers.length}</span></summary>{departedPlayers.map((player) => <div key={player.id}><b>{player.name}</b><small>{player.score} 分 · {player.leftAt ? formatTime(player.leftAt) : "已离场"}</small></div>)}</details>}<div className="mid-match-add"><input aria-label="中途加入玩家昵称" placeholder="新玩家昵称" maxLength={12} value={name} onChange={(event) => setName(event.target.value)} />{match.mode !== "cards" && <input aria-label="中途加入玩家初始积分" type="number" inputMode="numeric" value={initialScore} onChange={(event) => setInitialScore(Number(event.target.value))} />}<button disabled={!name.trim() || activePlayers.length >= 8} onClick={add}>＋ 中途加入</button></div></section>;
 }
 
-function ActiveMatchView({ match, onChange, onFinish, toast }: { match: BilliardsMatch; onChange: (match: BilliardsMatch) => void; onFinish: () => void; toast: (message: string) => void }) {
+function ActiveMatchView({ match, readOnly = false, onChange, onFinish, toast }: { match: BilliardsMatch; readOnly?: boolean; onChange: (match: BilliardsMatch) => void; onFinish: () => void; toast: (message: string) => void }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [, tick] = useState(0);
   useEffect(() => { const timer = window.setInterval(() => tick((value) => value + 1), 60000); return () => window.clearInterval(timer); }, []);
   const current = match.players.find((player) => player.id === match.currentPlayerId && player.active) ?? match.players.find((player) => player.active) ?? match.players[0];
   return (
-    <div className="match-page page-shell">
+    <div className={`match-page page-shell${readOnly ? " read-only-match" : ""}`}>
+      {readOnly && <section className="readonly-banner" role="status"><b>只读模式</b><span>这场云端对局由另一台设备主写。请在“我的”页面明确接管并刷新最新版本后再计分。</span></section>}
       <section className="match-banner">
         <div><span className="live-label"><i /> 对局进行中</span><h1>{match.mode === "cards" ? "奇招卡牌局" : match.mode === "score_cards" ? "追分 · 奇招牌" : "多人追分"}</h1><p>{match.players.filter((player) => player.active).length} 位在场 · {formatDuration(match.startedAt)}{match.cards ? ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"}` : ""}</p></div>
-        <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" onClick={onFinish}>结束对局</button></div>
+        <div className="match-banner-actions"><button onClick={() => setMoreOpen(!moreOpen)}>本局信息</button><button className="danger-text" disabled={readOnly} onClick={onFinish}>结束对局</button></div>
       </section>
       {moreOpen && <><section className="match-info"><div><span>玩家顺序</span><b>{match.players.filter((player) => player.active).map((player) => player.name).join(" → ")}</b></div><div><span>当前玩家</span><b>{current.name} · {(match.turnStrategy ?? "fixed") === "fixed" ? "固定轮转" : "得分者继续"}</b></div><div><span>规则与牌组快照</span><b>{match.rules.filter((rule) => rule.enabled).map((rule) => `${rule.label} ${rule.kind === "penalty" ? "−" : "+"}${rule.value}`).join(" · ") || "纯奇招牌局"}{match.cards && ` · ${match.cards.deckSnapshot?.name ?? "完整奇招"} V${match.cards.deckSnapshot?.version ?? 1}`}</b></div></section><PlayerManager match={match} onChange={onChange} toast={toast} /></>}
       {match.mode !== "cards" && <ScoreBoard match={match} onScore={(ruleId, playerId, note) => { const rule = match.rules.find((item) => item.id === ruleId); onChange(applyScore(match, ruleId, playerId, Date.now(), note)); toast(`已记录 ${rule?.label ?? "计分"}`); }} onTransfer={(winnerId, loserIds, amount, note) => { onChange(applyTransferScore(match, winnerId, loserIds, amount, note)); toast(`已记录转账：每名输家支付 ${amount} 分`); }} onBackfill={(playerId, delta, label, note) => { onChange(backfillScoreEvent(match, playerId, delta, label, note)); toast(`已补录 ${label} ${delta > 0 ? "+" : ""}${delta} 分`); }} onBlackGold={(winnerId, baseAmount, note) => { onChange(applyBlackGoldScore(match, winnerId, baseAmount, note)); toast(`黑金结算完成：每家支付 ${baseAmount * 2} 分`); }} onHandicap={(beneficiaryId, grantorId, amount, note) => { onChange(applyHandicapScore(match, beneficiaryId, grantorId, amount, note)); toast(`已记录让杆 ${amount} 分`); }} onCorrect={(eventId) => { onChange(correctScoreEvent(match, eventId, "手动更正")); toast("已追加更正事件，原流水保持不变"); }} onUndo={() => { onChange(undoLastScore(match)); toast("已撤销上一笔计分"); }} />}
@@ -658,8 +682,98 @@ function LocalMigrationPanel() {
   return <section className="migration-panel"><header><p className="kicker">R3 · LOCAL MIGRATION</p><h2>本机数据迁移</h2><p>扫描只读取本机存档；下载完整备份并明确确认前，不会注册设备、上传或修改原始数据。</p></header>{!migration ? <button className="primary" disabled={busy} onClick={scan}>{busy ? "正在扫描…" : "扫描本机数据"}</button> : <><div className="migration-counts"><span><b>{migration.preview.players}</b>玩家</span><span><b>{migration.preview.presets}</b>预设</span><span><b>{migration.preview.decks}</b>牌组</span><span><b>{migration.preview.matches}</b>对局</span><span><b>{migration.preview.eightBallRounds}</b>中八流水</span></div><small className="migration-checksum">备份校验和：{migration.backup.checksum}</small><div className="migration-actions"><button className="secondary" onClick={scan} disabled={busy}>重新扫描</button><button className="secondary" onClick={backup} disabled={busy}>下载完整 JSON 备份</button></div><label className="migration-confirm"><input type="checkbox" checked={confirmed} disabled={!backupDownloaded || busy} onChange={(event) => setConfirmed(event.target.checked)} /><span>我已保存备份，并确认把以上数据迁移到当前登录账号</span></label><button className="primary" disabled={!confirmed || !backupDownloaded || busy || migration.resources.length === 0} onClick={upload}>{busy ? "正在迁移…" : "确认并开始迁移"}</button></>}{message && <p className="migration-message" role="status">{message}</p>}</section>;
 }
 
-function ProfilePage({ history }: { history: BilliardsMatch[] }) {
-  return <div className="content-page page-shell"><header className="profile-hero"><span className="profile-avatar">游</span><div><p className="kicker">LOCAL GUEST · V{APP_VERSION}</p><h1>游客模式</h1><p>R2 本地核心功能版，核心能力无需注册，本机数据会持续保存。</p></div><button className="secondary" disabled>登录 / 注册 · 即将开放</button></header><section className="local-stats"><div><strong>{history.length}</strong><span>已完成对局</span></div><div><strong>{history.reduce((sum, match) => sum + match.scoreEvents.length, 0)}</strong><span>计分流水</span></div><div><strong>{history.reduce((sum, match) => sum + (match.cards?.events.length ?? 0), 0)}</strong><span>卡牌事件</span></div></section><section className="settings-list"><header><p className="kicker">LOCAL DATA</p><h2>本机资料</h2></header><div><span>4</span><p><b>R2 应用版本</b><small>当前预览版本 v{APP_VERSION}</small></p><strong className="state-good">预览中</strong></div><div><span>◎</span><p><b>本地自动保存</b><small>刷新页面仍可恢复未结束对局</small></p><strong className="state-good">已开启</strong></div><div><span>⇅</span><p><b>云端同步</b><small>账户与跨设备同步将在认证阶段开放</small></p><strong>未连接</strong></div><div><span>○</span><p><b>常用球友</b><small>登录后保存注册玩家与临时球友</small></p><strong>即将开放</strong></div></section><LocalMigrationPanel /></div>;
+function AccountForm({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => void }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [nickname, setNickname] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const submit = async () => {
+    setBusy(true); setMessage("");
+    try {
+      const payload = await apiPayload<{ user: AuthUser }>(await fetch(`/api/auth/${mode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(mode === "login" ? { username, password } : { username, password, nickname, inviteCode }),
+      }));
+      onAuthenticated(payload.user);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "账号操作失败"); }
+    finally { setBusy(false); }
+  };
+  return <section className="account-panel"><div className="segmented"><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>邀请码注册</button></div><form onSubmit={(event) => { event.preventDefault(); void submit(); }}><label>用户名<input autoComplete="username" minLength={3} maxLength={24} required value={username} onChange={(event) => setUsername(event.target.value)} /></label>{mode === "register" && <label>昵称<input autoComplete="nickname" maxLength={40} value={nickname} onChange={(event) => setNickname(event.target.value)} /></label>}<label>密码<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={6} maxLength={128} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>{mode === "register" && <label>固定邀请码<input type="password" autoComplete="off" required value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} /></label>}<button className="primary" disabled={busy}>{busy ? "正在连接…" : mode === "login" ? "登录并恢复同步" : "创建账号"}</button></form>{message && <p className="form-message" role="alert">{message}</p>}<small>未登录时仍可继续使用全部本地单机功能；账号 Cookie 为 HttpOnly，不会把长期令牌写入 localStorage。</small></section>;
+}
+
+type CloudMatchRow = { id: string; mode: string; status: string; version: number; created_at: number; ended_at: number | null };
+
+function CloudMatchesPanel({ ensureDevice, onRestore }: { ensureDevice: () => Promise<string>; onRestore: (match: BilliardsMatch | EightBallMatch, readOnly: boolean) => void }) {
+  const [matches, setMatches] = useState<CloudMatchRow[]>([]);
+  const [busyId, setBusyId] = useState("");
+  const [message, setMessage] = useState("");
+  const load = async () => {
+    try { setMatches((await apiPayload<{ matches: CloudMatchRow[] }>(await fetch("/api/history"))).matches); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "云端战绩读取失败"); }
+  };
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const restore = async (row: CloudMatchRow, takeover: boolean) => {
+    setBusyId(row.id); setMessage("");
+    try {
+      const deviceId = await ensureDevice();
+      const detail = await apiPayload<{ match: { snapshot_json: string; version: number } }>(await fetch(`/api/matches/${row.id}`));
+      if (takeover) {
+        await apiPayload(await fetch(`/api/matches/${row.id}/takeover`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operationId: crypto.randomUUID(), deviceId, expectedVersion: detail.match.version }),
+        }));
+      }
+      const snapshot: unknown = JSON.parse(detail.match.snapshot_json);
+      if (!isStoredMatch(snapshot) && !isEightBallMatch(snapshot)) throw new Error("云端快照与当前版本不兼容");
+      onRestore(snapshot, !takeover);
+      setMessage(takeover ? "已接管并恢复云端最新版本" : "已按只读模式恢复云端快照");
+      await load();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "云端恢复失败"); }
+    finally { setBusyId(""); }
+  };
+  return <section className="cloud-matches"><header><div><p className="kicker">CLOUD RECOVERY</p><h2>云端对局</h2></div><button className="secondary" onClick={() => void load()}>刷新</button></header>{matches.length ? matches.map((row) => <article key={row.id}><div><b>{row.mode} · {row.status === "completed" ? "已结束" : "进行中"}</b><small>{formatTime(row.created_at)} · 云端版本 {row.version}</small></div><div><button className="secondary" disabled={busyId === row.id} onClick={() => void restore(row, false)}>只读恢复</button>{row.status !== "completed" && <button className="primary" disabled={busyId === row.id} onClick={() => void restore(row, true)}>明确接管</button>}</div></article>) : <p className="empty-copy">当前账号还没有云端对局。</p>}{message && <p className="form-message" role="status">{message}</p>}<small>接管不会合并两台设备的离线修改；服务端会拒绝有效租约、旧版本和无权设备。</small></section>;
+}
+
+function AccountDataPanel({ onDeleted }: { onDeleted: () => void }) {
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const exportData = async () => {
+    setBusy(true); setMessage("");
+    try {
+      const response = await fetch("/api/account/export");
+      if (!response.ok) throw new Error(((await response.json()) as { error?: string }).error ?? "导出失败");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = `台球奇招-账号数据-${Date.now()}.json`; anchor.click(); URL.revokeObjectURL(url);
+      setMessage("账号 JSON 已导出");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "导出失败"); }
+    finally { setBusy(false); }
+  };
+  const deleteAccount = async () => {
+    if (confirmation !== "删除账号") return;
+    setBusy(true); setMessage("");
+    try {
+      await apiPayload(await fetch("/api/account", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) }));
+      onDeleted();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "账号删除失败"); }
+    finally { setBusy(false); }
+  };
+  return <section className="account-data-panel"><header><p className="kicker">DATA CONTROL</p><h2>导出与删除</h2></header><button className="secondary" disabled={busy} onClick={() => void exportData()}>导出完整账号 JSON</button><details><summary>永久删除账号…</summary><p>删除会立即撤销全部会话并删除本人独有数据；已有其他注册参与者的共享对局会保留，但解除你的账号关联。</p><label>当前密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>输入“删除账号”确认<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button className="danger-button" disabled={busy || confirmation !== "删除账号" || !password} onClick={() => void deleteAccount()}>永久删除账号</button></details>{message && <p className="form-message" role="status">{message}</p>}</section>;
+}
+
+function ProfilePage({ history, user, authLoading, sync, onAuthenticated, onLogout, onAccountDeleted, onRetrySync, ensureDevice, onRestore }: { history: BilliardsMatch[]; user: AuthUser | null; authLoading: boolean; sync: SyncView; onAuthenticated: (user: AuthUser) => void; onLogout: () => void; onAccountDeleted: () => void; onRetrySync: () => void; ensureDevice: () => Promise<string>; onRestore: (match: BilliardsMatch | EightBallMatch, readOnly: boolean) => void }) {
+  return <div className="content-page page-shell"><header className="profile-hero"><span className="profile-avatar">{user?.nickname.slice(0, 1) || "游"}</span><div><p className="kicker">{user ? `CLOUD ACCOUNT · ${user.publicCode}` : `LOCAL GUEST · V${APP_VERSION}`}</p><h1>{user ? user.nickname : "游客模式"}</h1><p>{user ? `@${user.username} · 本机数据保留，云端按账号隔离同步。` : "无需注册也可继续计分；登录后才会补传和跨设备恢复。"}</p></div>{user && <button className="secondary" onClick={onLogout}>退出账号</button>}</header>{authLoading ? <section className="account-panel">正在检查账号会话…</section> : !user && <AccountForm onAuthenticated={onAuthenticated} />}<section className="local-stats"><div><strong>{history.length}</strong><span>本机已完成</span></div><div><strong>{history.reduce((sum, match) => sum + match.scoreEvents.length, 0)}</strong><span>计分流水</span></div><div><strong>{sync.pending}</strong><span>待补传项目</span></div></section><section className="settings-list"><header><p className="kicker">SYNC STATUS</p><h2>本机与云端</h2></header><div><span>◎</span><p><b>本地自动保存</b><small>刷新页面仍可恢复未结束对局</small></p><strong className="state-good">已开启</strong></div><div><span>⇅</span><p><b>云端同步</b><small>{sync.message}</small></p><strong className={`sync-label ${sync.state}`}>{({ local: "仅本地", pending: "待同步", syncing: "同步中", synced: "已同步", failed: "同步失败", readonly: "只读" } as const)[sync.state]}</strong></div>{user && (sync.state === "failed" || sync.state === "pending") && <div className="settings-action"><button className="secondary" onClick={onRetrySync}>手动重试</button></div>}</section>{user && <><CloudMatchesPanel ensureDevice={ensureDevice} onRestore={onRestore} /><LocalMigrationPanel /><AccountDataPanel onDeleted={onAccountDeleted} /></>}</div>;
 }
 
 function ConfirmDialog({ title, body, onCancel, onConfirm }: { title: string; body: string; onCancel: () => void; onConfirm: () => void }) {
@@ -677,6 +791,10 @@ function StorageRecoveryDialog({ issue, onRetry, onReset }: { issue: StorageIssu
 export default function GameApp() {
   const [ready, setReady] = useState(false);
   const [data, setData] = useState<AppData>(EMPTY_DATA);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [sync, setSync] = useState<SyncView>(LOCAL_SYNC_VIEW);
+  const [activeReadOnly, setActiveReadOnly] = useState(false);
   const [path, setPath] = useState("/");
   const [setupMode, setSetupMode] = useState<MatchMode | null>(null);
   const [eightSetupOpen, setEightSetupOpen] = useState(false);
@@ -686,6 +804,7 @@ export default function GameApp() {
   const [discardArmed, setDiscardArmed] = useState(false);
   const [storageIssue, setStorageIssue] = useState<StorageIssue | null>(null);
   const [status, setStatus] = useState("");
+  const syncRunning = useRef(false);
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname || "/");
@@ -709,10 +828,76 @@ export default function GameApp() {
   }, [data, ready, storageIssue]);
 
   useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/auth/me").then((response) => apiPayload<{ user: AuthUser | null }>(response)).then((payload) => {
+      if (!cancelled) setUser(payload.user);
+    }).catch(() => {
+      if (!cancelled) setUser(null);
+    }).finally(() => {
+      if (!cancelled) setAuthLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     if (!status) return;
     const timer = window.setTimeout(() => setStatus(""), 2600);
     return () => window.clearTimeout(timer);
   }, [status]);
+
+  const ensureDevice = async (): Promise<string> => {
+    const store = browserStore();
+    let deviceKey = store.getRaw(SYNC_DEVICE_KEY);
+    if (!deviceKey) { deviceKey = crypto.randomUUID(); store.setRaw(SYNC_DEVICE_KEY, deviceKey); }
+    const payload = await apiPayload<{ device: { id: string } }>(await fetch("/api/devices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceKey, name: navigator.platform || "浏览器设备" }),
+    }));
+    return payload.device.id;
+  };
+
+  const runSync = async (manual = false) => {
+    if (!user || syncRunning.current || !ready || storageIssue) return;
+    syncRunning.current = true;
+    setSync((current) => ({ ...current, state: "syncing", message: "正在按顺序补传本机数据…" }));
+    try {
+      const store = browserStore();
+      if (manual) retrySyncQueue(store);
+      enqueueMigrationResources(store, await prepareLocalMigration(store));
+      let summary = syncQueueSummary(store);
+      if (!summary.total) { setSync({ state: "synced", pending: 0, message: "本机与云端已确认一致" }); return; }
+      if (!navigator.onLine) { setSync({ state: "pending", pending: summary.total, message: "当前离线，将在恢复联网后自动补传" }); return; }
+      const result = await flushSyncQueue(store, { deviceId: await ensureDevice() });
+      summary = syncQueueSummary(store);
+      if (result.authRequired) {
+        setUser(null);
+        setSync({ state: "failed", pending: summary.total, message: "登录已失效；重新登录后保留队列并继续" });
+      } else if (result.conflict || result.failed) {
+        setSync({ state: "failed", pending: summary.total, message: result.conflict ? "云端版本冲突，已停止补传且保留本机队列" : "补传失败，已保留队列并等待重试" });
+      } else {
+        setSync({ state: summary.total ? "pending" : "synced", pending: summary.total, message: summary.total ? "仍有项目等待补传" : "本机与云端已确认一致" });
+      }
+    } catch (error) {
+      let pending = 0;
+      try { pending = syncQueueSummary(browserStore()).total; } catch { /* surfaced below */ }
+      setSync({ state: "failed", pending, message: error instanceof Error ? error.message : "同步失败" });
+    } finally { syncRunning.current = false; }
+  };
+
+  useEffect(() => {
+    if (!user || !ready || authLoading) return;
+    const timer = window.setTimeout(() => void runSync(), 0);
+    return () => window.clearTimeout(timer);
+  // The serialized local archive is the sync source; every local mutation re-evaluates pending resources.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, data, ready, authLoading]);
+
+  useEffect(() => {
+    const online = () => { if (user) void runSync(); };
+    window.addEventListener("online", online);
+    return () => window.removeEventListener("online", online);
+  });
 
   const navigate = (next: string) => {
     window.history.pushState({}, "", next);
@@ -725,6 +910,7 @@ export default function GameApp() {
     const match = createMatch(draft);
     setData({ ...data, activeMatch: match, savedRules: draft.rules, scorePresets });
     setSetupMode(null);
+    setActiveReadOnly(false);
     navigate("/");
     setStatus("新对局已开始并保存到本机");
   };
@@ -759,6 +945,7 @@ export default function GameApp() {
     browserStore().setRaw(EIGHT_BALL_LAYOUT_KEY, match.layout);
     setData({ ...data, activeEightBallMatch: match });
     setEightSetupOpen(false);
+    setActiveReadOnly(false);
     navigate("/");
     setStatus("中八比赛已开始并保存到本机");
   };
@@ -818,11 +1005,35 @@ export default function GameApp() {
     setStatus("原始数据已备份，本机数据已安全重置");
   };
 
+  const logout = async () => {
+    try { await apiPayload(await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })); }
+    catch { /* The local account state must still be cleared when the network is unavailable. */ }
+    setUser(null);
+    setSync(LOCAL_SYNC_VIEW);
+    setStatus("已退出账号；本机数据和待补传队列均已保留");
+  };
+
+  const restoreCloudMatch = (match: BilliardsMatch | EightBallMatch, readOnly: boolean) => {
+    setData((current) => {
+      if (isEightBallMatch(match)) {
+        return match.status === "completed"
+          ? { ...current, eightBallHistory: [match, ...current.eightBallHistory.filter((item) => item.id !== match.id)] }
+          : { ...current, activeEightBallMatch: match };
+      }
+      return match.status === "completed"
+        ? { ...current, history: [match, ...current.history.filter((item) => item.id !== match.id)] }
+        : { ...current, activeMatch: match };
+    });
+    setActiveReadOnly(readOnly && match.status === "active");
+    setSync(readOnly ? { state: "readonly", pending: sync.pending, message: "云端快照已只读恢复；接管前不会写入" } : sync);
+    navigate(match.status === "completed" ? `/history/${match.id}` : "/");
+  };
+
   const page = (() => {
     if (path === "/") return data.activeEightBallMatch
-      ? <EightBallBoard match={data.activeEightBallMatch} onChange={updateEight} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
+      ? <div className={activeReadOnly ? "read-only-match" : ""}>{activeReadOnly && <section className="readonly-banner"><b>只读模式</b><span>请先在“我的”页面明确接管，再继续写入。</span></section>}<EightBallBoard match={data.activeEightBallMatch} onChange={activeReadOnly ? () => setStatus("只读模式不能修改") : updateEight} onFinish={() => !activeReadOnly && setConfirmEnd(true)} toast={setStatus} /></div>
       : data.activeMatch
-        ? <ActiveMatchView match={data.activeMatch} onChange={updateActive} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
+        ? <ActiveMatchView match={data.activeMatch} readOnly={activeReadOnly} onChange={activeReadOnly ? () => setStatus("只读模式不能修改") : updateActive} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
         : <EmptyHome onStart={openSetup} onStartEight={openEightSetup} onNavigate={navigate} onResume={resumePaused} recent={data.history[0]} paused={data.pausedMatches} />;
     if (path === "/play") return <PlayPage onStart={openSetup} onStartEight={openEightSetup} />;
     if (path === "/decks") return <DecksPage />;
@@ -833,7 +1044,7 @@ export default function GameApp() {
       if (selectedEight) return <EightBallHistoryDetail match={selectedEight} onBack={() => navigate("/history")} />;
       return <><UnifiedHistoryPage history={data.history} eightBallHistory={data.eightBallHistory} selectedId={selectedId} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />{selectedMatch && selectedMatch.scoreEvents.length > 0 && <HistoryCorrectionDock match={selectedMatch} onChange={(updated) => setData({ ...data, history: data.history.map((match) => match.id === updated.id ? updated : match) })} />}</>;
     }
-    if (path === "/profile") return <ProfilePage history={data.history} />;
+    if (path === "/profile") return <ProfilePage history={data.history} user={user} authLoading={authLoading} sync={sync} onAuthenticated={(nextUser) => { setUser(nextUser); setStatus("账号已连接，正在检查离线队列"); }} onLogout={() => void logout()} onAccountDeleted={() => { setUser(null); setSync(LOCAL_SYNC_VIEW); setStatus("云端账号已删除；本机数据仍保留"); }} onRetrySync={() => void runSync(true)} ensureDevice={ensureDevice} onRestore={restoreCloudMatch} />;
     return <div className="large-empty page-shell"><span>404</span><h2>页面不存在</h2><button className="primary" onClick={() => navigate("/")}>返回对局</button></div>;
   })();
 
@@ -841,7 +1052,7 @@ export default function GameApp() {
 
   return (
     <main className="app-root">
-      <AppHeader path={path} active={!!data.activeMatch || !!data.activeEightBallMatch} onNavigate={navigate} />
+      <AppHeader path={path} active={!!data.activeMatch || !!data.activeEightBallMatch} user={user} sync={sync} onNavigate={navigate} />
       {page}
       {setupMode && <SetupDialog initialMode={setupMode} savedRules={data.savedRules} scorePresets={data.scorePresets} onClose={() => setSetupMode(null)} onStart={start} />}
       {eightSetupOpen && <EightBallSetupDialog defaultLayout={eightDefaultLayout} onClose={() => setEightSetupOpen(false)} onStart={startEight} />}

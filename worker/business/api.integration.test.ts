@@ -278,6 +278,48 @@ describe("R3 business authorization and cloud APIs", () => {
       .resolves.toBe(1);
   });
 
+  it("requires an expired lease and the latest version before an owner device can take over", async () => {
+    const account = await register("takeover_owner");
+    const sourceDevice = await device(account, "source-device");
+    const targetDevice = await device(account, "target-device");
+    const created = await write("/api/matches", account.cookie, {
+      operationId: "create-for-takeover",
+      deviceId: sourceDevice,
+      mode: "score",
+    });
+    const { match } = await created.json() as { match: { id: string; version: number } };
+
+    const activeLease = await write(`/api/matches/${match.id}/takeover`, account.cookie, {
+      operationId: crypto.randomUUID(), deviceId: targetDevice, expectedVersion: 0,
+    });
+    expect(activeLease.status).toBe(409);
+    await expect(activeLease.json()).resolves.toMatchObject({ error: "另一台设备仍持有主写租约", currentVersion: 0 });
+
+    await env.DB.prepare("UPDATE matches SET version = 2, write_lease_expires_at = ?1 WHERE id = ?2")
+      .bind(Date.now() - 1, match.id).run();
+    const stale = await write(`/api/matches/${match.id}/takeover`, account.cookie, {
+      operationId: crypto.randomUUID(), deviceId: targetDevice, expectedVersion: 0,
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toEqual({ error: "版本冲突，请先恢复云端最新版本", currentVersion: 2 });
+
+    const operationId = crypto.randomUUID();
+    const accepted = await write(`/api/matches/${match.id}/takeover`, account.cookie, {
+      operationId, deviceId: targetDevice, expectedVersion: 2,
+    });
+    expect(accepted.status).toBe(200);
+    const result = await accepted.json() as { deviceId: string; version: number; leaseExpiresAt: number };
+    expect(result).toMatchObject({ deviceId: targetDevice, version: 2 });
+    expect(result.leaseExpiresAt).toBeGreaterThan(Date.now());
+
+    const duplicate = await write(`/api/matches/${match.id}/takeover`, account.cookie, {
+      operationId, deviceId: targetDevice, expectedVersion: 2,
+    });
+    await expect(duplicate.json()).resolves.toEqual(result);
+    await expect(env.DB.prepare("SELECT write_lease_device_id FROM matches WHERE id = ?1")
+      .bind(match.id).first<string>("write_lease_device_id")).resolves.toBe(targetDevice);
+  });
+
   it("scopes sync receipts and indexed history queries to the session user", async () => {
     const a = await register("account_a");
     const b = await register("account_b");

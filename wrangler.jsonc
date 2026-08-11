@@ -51,6 +51,7 @@
     },
     "preview": {
       "name": "hei8-r3-preview",
+      "triggers": { "crons": ["17 3 * * *"] },
       "images": {
         "binding": "IMAGES"
       },
@@ -72,6 +73,7 @@
     },
     "production": {
       "name": "hei8-r3-production",
+      "triggers": { "crons": ["17 3 * * *"] },
       "images": {
         "binding": "IMAGES"
       },

@@ -359,6 +359,99 @@ async function updateProfile(request: Request, env: AuthEnv): Promise<Response> 
   return json({ user: { ...userJson(session.user), nickname, avatarUrl } });
 }
 
+async function exportAccount(request: Request, env: AuthEnv): Promise<Response> {
+  const session = await requireSession(env, request);
+  const userId = session.user.id;
+  const [profile, presets, decks, deckVersions, matches, players, scoreEvents, cardEvents, contacts] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT u.id, u.display_username AS username, u.created_at, u.updated_at,
+              p.public_code, p.nickname, p.avatar_url
+         FROM users u JOIN profiles p ON p.user_id = u.id WHERE u.id = ?1`,
+    ).bind(userId),
+    env.DB.prepare("SELECT * FROM score_presets WHERE owner_user_id = ?1 ORDER BY created_at").bind(userId),
+    env.DB.prepare("SELECT * FROM decks WHERE owner_user_id = ?1 ORDER BY created_at").bind(userId),
+    env.DB.prepare(
+      "SELECT dv.* FROM deck_versions dv JOIN decks d ON d.id = dv.deck_id WHERE d.owner_user_id = ?1 ORDER BY dv.created_at",
+    ).bind(userId),
+    env.DB.prepare(
+      `SELECT DISTINCT m.* FROM matches m
+        LEFT JOIN match_players mp ON mp.match_id = m.id AND mp.user_id = ?1
+       WHERE m.owner_user_id = ?1 OR mp.user_id = ?1 ORDER BY m.created_at`,
+    ).bind(userId),
+    env.DB.prepare(
+      `SELECT mp.* FROM match_players mp JOIN matches m ON m.id = mp.match_id
+       WHERE m.owner_user_id = ?1 OR EXISTS (
+         SELECT 1 FROM match_players mine WHERE mine.match_id = m.id AND mine.user_id = ?1
+       ) ORDER BY mp.match_id, mp.seat_no`,
+    ).bind(userId),
+    env.DB.prepare(
+      `SELECT se.* FROM score_events se JOIN matches m ON m.id = se.match_id
+       WHERE m.owner_user_id = ?1 OR EXISTS (
+         SELECT 1 FROM match_players mine WHERE mine.match_id = m.id AND mine.user_id = ?1
+       ) ORDER BY se.match_id, se.sequence_no`,
+    ).bind(userId),
+    env.DB.prepare(
+      `SELECT ce.* FROM card_events ce JOIN matches m ON m.id = ce.match_id
+       WHERE m.owner_user_id = ?1 OR EXISTS (
+         SELECT 1 FROM match_players mine WHERE mine.match_id = m.id AND mine.user_id = ?1
+       ) ORDER BY ce.match_id, ce.sequence_no`,
+    ).bind(userId),
+    env.DB.prepare(
+      "SELECT owner_user_id, contact_user_id, status, source, last_played_at, created_at, updated_at FROM player_contacts WHERE owner_user_id = ?1 ORDER BY created_at",
+    ).bind(userId),
+  ]);
+  const body = {
+    formatVersion: 1,
+    exportedAt: Date.now(),
+    profile: profile.results[0] ?? null,
+    presets: presets.results,
+    decks: decks.results,
+    deckVersions: deckVersions.results,
+    matches: matches.results,
+    matchPlayers: players.results,
+    scoreEvents: scoreEvents.results,
+    cardEvents: cardEvents.results,
+    contacts: contacts.results,
+  };
+  return json(body, 200, { "Content-Disposition": `attachment; filename="hei8-account-${session.user.public_code}.json"` });
+}
+
+async function deleteAccount(request: Request, env: AuthEnv, requestId: string): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const password = validatePassword(body.password);
+  const digest = await digestPassword(env.PASSWORD_HMAC_KEY, session.user.normalized_username, password);
+  if (!(await verifySecret(digest, session.user.password_digest))) return json({ error: "密码错误，账号未删除" }, 401);
+  const now = Date.now();
+
+  await env.DB.batch([
+    // Shared participant-visible matches survive by transferring ownership to the first linked account.
+    env.DB.prepare(
+      `UPDATE matches
+          SET owner_user_id = (
+                SELECT mp.user_id FROM match_players mp
+                 WHERE mp.match_id = matches.id AND mp.user_id IS NOT NULL AND mp.user_id <> ?1
+                 ORDER BY mp.seat_no LIMIT 1
+              ),
+              write_lease_device_id = NULL, write_lease_expires_at = NULL, updated_at = ?2
+        WHERE owner_user_id = ?1 AND privacy = 'participants'
+          AND EXISTS (
+            SELECT 1 FROM match_players mp
+             WHERE mp.match_id = matches.id AND mp.user_id IS NOT NULL AND mp.user_id <> ?1
+          )`,
+    ).bind(session.user.id, now),
+    env.DB.prepare("DELETE FROM matches WHERE owner_user_id = ?1").bind(session.user.id),
+    env.DB.prepare("UPDATE match_players SET user_id = NULL WHERE user_id = ?1").bind(session.user.id),
+    env.DB.prepare(
+      `INSERT INTO auth_audit_events (id, user_id, action, outcome, request_id, metadata_json, created_at)
+       VALUES (?1, ?2, 'delete_account', 'success', ?3, '{}', ?4)`,
+    ).bind(crypto.randomUUID(), session.user.id, requestId, now),
+    env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(session.user.id),
+  ]);
+  return json({ deleted: true }, 200, { "Set-Cookie": clearSessionCookie() });
+}
+
 export async function handleApiRequest(request: Request, env: AuthEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   const requestId = request.headers.get("CF-Ray") ?? request.headers.get("X-Request-ID") ?? crypto.randomUUID();
@@ -372,6 +465,8 @@ export async function handleApiRequest(request: Request, env: AuthEnv): Promise<
       return await changePassword(request, env, requestId);
     }
     if (pathname === "/api/profile" && request.method === "PATCH") return await updateProfile(request, env);
+    if (pathname === "/api/account/export" && request.method === "GET") return await exportAccount(request, env);
+    if (pathname === "/api/account" && request.method === "DELETE") return await deleteAccount(request, env, requestId);
     if (pathname.startsWith("/api/auth/") || pathname === "/api/profile") {
       return json({ error: "Method not allowed" }, 405, { Allow: "GET, POST, PATCH" });
     }

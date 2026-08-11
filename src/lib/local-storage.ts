@@ -9,6 +9,7 @@ export const LEGACY_CARD_STORAGE_KEY = "neon-pool-cards:v1";
 export const EIGHT_BALL_LAYOUT_KEY = "billiards-eight-layout:v1";
 export const MIGRATION_LINKS_KEY = "billiards-cloud-links:v1";
 export const SYNC_DEVICE_KEY = "billiards-sync-device:v1";
+export const SYNC_QUEUE_KEY = "billiards-sync-queue:v1";
 
 export type ScorePreset = { id: string; name: string; rules: ScoreRule[] };
 

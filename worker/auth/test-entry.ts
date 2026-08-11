@@ -4,7 +4,7 @@ import { handleBusinessApiRequest } from "../business/api";
 export default {
   fetch(request: Request, env: AuthEnv): Promise<Response> {
     const pathname = new URL(request.url).pathname;
-    return pathname.startsWith("/api/auth/") || pathname === "/api/profile"
+    return pathname.startsWith("/api/auth/") || pathname === "/api/profile" || pathname.startsWith("/api/account")
       ? handleApiRequest(request, env)
       : handleBusinessApiRequest(request, env);
   },

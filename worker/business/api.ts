@@ -235,6 +235,7 @@ async function getMatch(request: Request, env: AuthEnv, matchId: string): Promis
   const [match, players, scores, cards] = await env.DB.batch([
     env.DB.prepare(
       `SELECT id, owner_user_id, mode, status, privacy, version, snapshot_json,
+              write_lease_device_id, write_lease_expires_at,
               created_at, updated_at, started_at, ended_at
          FROM matches WHERE id = ?1`,
     ).bind(matchId),
@@ -249,6 +250,74 @@ async function getMatch(request: Request, env: AuthEnv, matchId: string): Promis
     ).bind(matchId),
   ]);
   return json({ match: match.results[0], players: players.results, scoreEvents: scores.results, cardEvents: cards.results });
+}
+
+async function takeOverMatch(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const operationId = uuidField(body, "operationId");
+  const deviceId = uuidField(body, "deviceId");
+  const expectedVersion = integerField(body, "expectedVersion");
+
+  const duplicate = duplicateResponse(await findReceipt(env, session.user.id, operationId), "lease_takeover");
+  if (duplicate) return duplicate;
+
+  const match = await requireMatchRead(env, session, matchId);
+  if (match.owner_user_id !== session.user.id) return json({ error: "无权接管此对局" }, 403);
+  if (match.status === "completed" || match.status === "cancelled") return json({ error: "对局已结束，不能接管" }, 409);
+  if (match.version !== expectedVersion) {
+    return json({ error: "版本冲突，请先恢复云端最新版本", currentVersion: match.version }, 409);
+  }
+  const ownsDevice = await env.DB.prepare(
+    "SELECT 1 AS owned FROM devices WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+  ).bind(deviceId, session.user.id).first<number>("owned");
+  if (!ownsDevice) return json({ error: "设备不存在" }, 404);
+
+  const now = Date.now();
+  if (match.write_lease_device_id && match.write_lease_device_id !== deviceId
+    && (match.write_lease_expires_at ?? 0) >= now) {
+    return json({
+      error: "另一台设备仍持有主写租约",
+      currentVersion: match.version,
+      leaseExpiresAt: match.write_lease_expires_at,
+    }, 409);
+  }
+
+  const leaseExpiresAt = now + LEASE_DURATION_MS;
+  const response = { matchId, deviceId, version: match.version, leaseExpiresAt };
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE matches
+            SET write_lease_device_id = ?1, write_lease_expires_at = ?2, updated_at = ?3
+          WHERE id = ?4 AND owner_user_id = ?5 AND version = ?6
+            AND status IN ('draft', 'active')
+            AND (write_lease_device_id IS NULL OR write_lease_device_id = ?1 OR write_lease_expires_at < ?3)`,
+      ).bind(deviceId, leaseExpiresAt, now, matchId, session.user.id, expectedVersion),
+      env.DB.prepare(
+        `INSERT INTO sync_receipts
+          (id, user_id, device_id, operation_id, resource_type, resource_id, result, response_json)
+         SELECT ?1, ?2, ?3, ?4, 'lease_takeover', ?5, 'accepted', ?6
+          WHERE EXISTS (
+            SELECT 1 FROM matches
+             WHERE id = ?5 AND owner_user_id = ?2 AND write_lease_device_id = ?3
+               AND write_lease_expires_at = ?7 AND version = ?8
+          )`,
+      ).bind(
+        crypto.randomUUID(), session.user.id, deviceId, operationId, matchId,
+        JSON.stringify(response), leaseExpiresAt, expectedVersion,
+      ),
+    ]);
+    if ((results[0].meta.changes ?? 0) !== 1 || (results[1].meta.changes ?? 0) !== 1) {
+      return json({ error: "接管条件已变化，请刷新后重试" }, 409);
+    }
+  } catch (error) {
+    const raced = duplicateResponse(await findReceipt(env, session.user.id, operationId), "lease_takeover");
+    if (raced) return raced;
+    throw error;
+  }
+  return json(response);
 }
 
 async function appendScoreEvent(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
@@ -472,6 +541,8 @@ export async function handleBusinessApiRequest(request: Request, env: AuthEnv): 
     if (match && request.method === "GET") return await getMatch(request, env, match[1]);
     const scoreEvent = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})\/score-events$/);
     if (scoreEvent && request.method === "POST") return await appendScoreEvent(request, env, scoreEvent[1]);
+    const takeover = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})\/takeover$/);
+    if (takeover && request.method === "POST") return await takeOverMatch(request, env, takeover[1]);
 
     if (pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);
     return json({ error: "Not found" }, 404);

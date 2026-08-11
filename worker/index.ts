@@ -31,7 +31,7 @@ const worker = {
       }
     }
 
-    if (url.pathname.startsWith("/api/auth/") || url.pathname === "/api/profile") {
+    if (url.pathname.startsWith("/api/auth/") || url.pathname === "/api/profile" || url.pathname.startsWith("/api/account")) {
       return handleApiRequest(request, env);
     }
 
@@ -62,6 +62,15 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+  async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+    const now = Date.now();
+    ctx.waitUntil(env.DB.batch([
+      env.DB.prepare("DELETE FROM sync_receipts WHERE received_at < ?1").bind(now - 30 * 24 * 60 * 60 * 1000),
+      env.DB.prepare("DELETE FROM auth_audit_events WHERE created_at < ?1").bind(now - 180 * 24 * 60 * 60 * 1000),
+      env.DB.prepare("DELETE FROM match_audit_events WHERE created_at < ?1").bind(now - 180 * 24 * 60 * 60 * 1000),
+      env.DB.prepare("DELETE FROM sessions WHERE revoked_at IS NOT NULL AND revoked_at < ?1").bind(now - 30 * 24 * 60 * 60 * 1000),
+    ]));
   },
 };
 

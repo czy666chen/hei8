@@ -23,6 +23,20 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM card_events"),
+    env.DB.prepare("DELETE FROM score_events"),
+    env.DB.prepare("DELETE FROM match_audit_events"),
+    env.DB.prepare("DELETE FROM match_claims"),
+    env.DB.prepare("DELETE FROM sync_receipts"),
+    env.DB.prepare("DELETE FROM match_players"),
+    env.DB.prepare("DELETE FROM matches"),
+    env.DB.prepare("DELETE FROM deck_cards"),
+    env.DB.prepare("DELETE FROM deck_versions"),
+    env.DB.prepare("DELETE FROM decks"),
+    env.DB.prepare("DELETE FROM score_presets"),
+    env.DB.prepare("DELETE FROM player_contacts"),
+    env.DB.prepare("DELETE FROM player_invites"),
+    env.DB.prepare("DELETE FROM devices"),
     env.DB.prepare("DELETE FROM auth_audit_events"),
     env.DB.prepare("DELETE FROM users"),
   ]);
@@ -234,5 +248,62 @@ describe("R3 authentication HTTP API", () => {
     ).first<string>("metadata");
     expect(auditText).not.toContain("wrong11");
     expect(auditText).not.toContain("secret1");
+  });
+
+  it("exports account data and deletes an account only after password confirmation", async () => {
+    const first = await register("export_owner", "secret1");
+    const firstPayload = await first.clone().json() as { user: { id: string } };
+    const firstCookie = cookieValue(first);
+    const second = await register("new_owner", "secret2");
+    const secondPayload = await second.json() as { user: { id: string } };
+    const matchId = crypto.randomUUID();
+    const ownerPlayerId = crypto.randomUUID();
+    const participantId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO score_presets (id, owner_user_id, name, rules_json) VALUES (?1, ?2, 'exported', '{}')",
+      ).bind(crypto.randomUUID(), firstPayload.user.id),
+      env.DB.prepare(
+        "INSERT INTO matches (id, owner_user_id, mode, status, privacy) VALUES (?1, ?2, 'score', 'active', 'participants')",
+      ).bind(matchId, firstPayload.user.id),
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, user_id, nickname_snapshot) VALUES (?1, ?2, 0, ?3, 'Owner')",
+      ).bind(ownerPlayerId, matchId, firstPayload.user.id),
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, user_id, nickname_snapshot) VALUES (?1, ?2, 1, ?3, 'Participant')",
+      ).bind(participantId, matchId, secondPayload.user.id),
+    ]);
+
+    const exported = await SELF.fetch("http://example.com/api/account/export", { headers: { Cookie: firstCookie } });
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("Content-Disposition")).toContain("attachment");
+    await expect(exported.json()).resolves.toMatchObject({
+      formatVersion: 1,
+      profile: { id: firstPayload.user.id },
+      presets: [{ name: "exported" }],
+      matches: [{ id: matchId }],
+    });
+
+    const wrong = await SELF.fetch("http://example.com/api/account", {
+      method: "DELETE",
+      headers: { Cookie: firstCookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "wrong11" }),
+    });
+    expect(wrong.status).toBe(401);
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM users").first<number>("count")).resolves.toBe(2);
+
+    const deleted = await SELF.fetch("http://example.com/api/account", {
+      method: "DELETE",
+      headers: { Cookie: firstCookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "secret1" }),
+    });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toEqual({ deleted: true });
+    await expect(env.DB.prepare("SELECT owner_user_id FROM matches WHERE id = ?1").bind(matchId).first<string>("owner_user_id"))
+      .resolves.toBe(secondPayload.user.id);
+    await expect(env.DB.prepare("SELECT user_id FROM match_players WHERE id = ?1").bind(ownerPlayerId).first<string | null>("user_id"))
+      .resolves.toBeNull();
+    await expect(SELF.fetch("http://example.com/api/auth/me", { headers: { Cookie: firstCookie } }).then((response) => response.json()))
+      .resolves.toEqual({ user: null, session: { authenticated: false } });
   });
 });
