@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { CARD_DEFINITIONS, CardCategory } from "../src/data/cards";
-import { GameState, loadGameState } from "../src/lib/deck";
 import { getOfficialDeck, OFFICIAL_DECKS, officialDeckCardCount, OfficialDeckId } from "../src/lib/official-decks";
 import {
   addMatchPlayer,
@@ -23,7 +22,6 @@ import {
   finishMatch,
   getPlayerAvatarColor,
   getRankings,
-  isStoredMatch,
   hasPlayerActivity,
   leaveMatchPlayer,
   MatchDraft,
@@ -52,38 +50,36 @@ import {
   EightBallWinType,
   finishEightBallMatch,
   getEffectiveEightBallRounds,
-  isEightBallMatch,
   pauseEightBallMatch,
   recordEightBallRound,
   renameEightBallPlayer,
   resumeEightBallMatch,
   undoLastEightBallRound,
 } from "../src/lib/eight-ball";
+import {
+  APP_DATA_CODEC,
+  APP_STORAGE_KEY,
+  AppData,
+  BrowserStorageAdapter,
+  EIGHT_BALL_LAYOUT_KEY,
+  EMPTY_APP_DATA as EMPTY_DATA,
+  loadAppData,
+  ScorePreset,
+  StorageIssue,
+  SYNC_DEVICE_KEY,
+  VersionedLocalStore,
+} from "../src/lib/local-storage";
+import {
+  downloadMigrationBackup,
+  prepareLocalMigration,
+  PreparedLocalMigration,
+  recordMigrationUpload,
+  uploadLocalMigration,
+} from "../src/lib/local-migration";
 
-const APP_STORAGE_KEY = "billiards-club-assistant:v1";
-const CARD_STORAGE_KEY = "billiards-trick-cards:v2";
-const LEGACY_CARD_STORAGE_KEY = "neon-pool-cards:v1";
 const APP_VERSION = "4.1.0";
 
-type AppData = {
-  version: 1;
-  activeMatch: BilliardsMatch | null;
-  history: BilliardsMatch[];
-  savedRules: ScoreRule[];
-  scorePresets: ScorePreset[];
-  pausedMatches: BilliardsMatch[];
-  recoverySnapshots: { match: BilliardsMatch; abandonedAt: number; reason: string }[];
-  activeEightBallMatch: EightBallMatch | null;
-  eightBallHistory: EightBallMatch[];
-};
-
-type ScorePreset = { id: string; name: string; rules: ScoreRule[] };
-
 const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
-
-type StorageIssue = { message: string; raw: string };
-
-const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES, scorePresets: [], pausedMatches: [], recoverySnapshots: [], activeEightBallMatch: null, eightBallHistory: [] };
 
 const NAV_ITEMS = [
   { path: "/", label: "对局", icon: "◎" },
@@ -93,86 +89,8 @@ const NAV_ITEMS = [
   { path: "/profile", label: "我的", icon: "○" },
 ];
 
-function migrateLegacyCardMatch(state: GameState): BilliardsMatch {
-  const now = Date.now();
-  const players = [
-    { id: "legacy-player-a", name: "玩家 A", kind: "guest" as const, initialScore: 0, score: 0, active: true },
-    { id: "legacy-player-b", name: "玩家 B", kind: "guest" as const, initialScore: 0, score: 0, active: true },
-  ];
-  const shared = state.settings.handMode === "shared";
-  return {
-    version: 1,
-    id: `migrated-${now}`,
-    mode: "cards",
-    status: "active",
-    createdAt: now,
-    startedAt: now,
-    players,
-    currentPlayerId: players[0].id,
-    rules: DEFAULT_RULES,
-    scoreEvents: [],
-    cards: {
-      mode: shared ? "shared" : "independent",
-      remaining: state.remaining,
-      hands: shared
-        ? { shared: state.hands.shared }
-        : { [players[0].id]: state.hands.playerA, [players[1].id]: state.hands.playerB },
-      used: state.used.map((record) => record.card),
-      skipped: state.discarded.map((record) => record.card),
-      events: [],
-      initialHandSize: shared ? state.settings.sharedHandSize : state.settings.playerAHandSize,
-      deckSnapshot: {
-        id: "complete",
-        version: 1,
-        name: "完整奇招",
-        definitionIds: [...getOfficialDeck("complete").definitionIds],
-        cardCount: 51,
-      },
-    },
-  };
-}
-
-function parseAppData(raw: string | null): AppData | null {
-  if (!raw) return null;
-  const parsed: unknown = JSON.parse(raw);
-  if (parsed && typeof parsed === "object") {
-    const data = parsed as Partial<AppData>;
-    if (data.version === 1 && Array.isArray(data.history)) {
-      return {
-        version: 1,
-        activeMatch: isStoredMatch(data.activeMatch) ? data.activeMatch : null,
-        history: data.history.filter(isStoredMatch),
-        savedRules: Array.isArray(data.savedRules) ? data.savedRules : DEFAULT_RULES,
-        scorePresets: Array.isArray(data.scorePresets)
-          ? data.scorePresets.filter((preset) => preset && typeof preset.id === "string" && typeof preset.name === "string" && Array.isArray(preset.rules))
-          : [],
-        pausedMatches: Array.isArray(data.pausedMatches) ? data.pausedMatches.filter(isStoredMatch) : [],
-        recoverySnapshots: Array.isArray(data.recoverySnapshots)
-          ? data.recoverySnapshots.filter((item) => item && isStoredMatch(item.match))
-          : [],
-        activeEightBallMatch: isEightBallMatch(data.activeEightBallMatch) ? data.activeEightBallMatch : null,
-        eightBallHistory: Array.isArray(data.eightBallHistory) ? data.eightBallHistory.filter(isEightBallMatch) : [],
-      };
-    }
-  }
-  throw new Error("数据格式或版本无法识别");
-}
-
-function loadAppData(): { data: AppData; issue?: StorageIssue } {
-  const raw = localStorage.getItem(APP_STORAGE_KEY);
-  try {
-    const parsed = parseAppData(raw);
-    if (parsed) return { data: parsed };
-  } catch (error) {
-    return { data: EMPTY_DATA, issue: { message: error instanceof Error ? error.message : "本机数据读取失败", raw: raw ?? "" } };
-  }
-  const legacy = loadGameState(localStorage.getItem(CARD_STORAGE_KEY))
-    ?? loadGameState(localStorage.getItem(LEGACY_CARD_STORAGE_KEY));
-  const hasLegacyGame = legacy && (
-    legacy.used.length > 0 || legacy.discarded.length > 0 ||
-    Object.values(legacy.hands).some((hand) => hand.length > 0)
-  );
-  return { data: hasLegacyGame ? { ...EMPTY_DATA, activeMatch: migrateLegacyCardMatch(legacy) } : EMPTY_DATA };
+function browserStore() {
+  return new VersionedLocalStore(new BrowserStorageAdapter(window.localStorage));
 }
 
 function formatTime(timestamp: number) {
@@ -704,8 +622,44 @@ function EightBallHistoryDetail({ match, onBack }: { match: EightBallMatch; onBa
   return <div className="content-page page-shell"><button className="back-link" onClick={onBack}>← 返回战绩</button><header className="page-title split"><div><p className="kicker">CHINESE EIGHT · MATCH REPORT</p><h1>{match.title || "中八双人赛"}</h1><p>{formatTime(match.startedAt)} · {durationLabel(eightBallElapsedMs(match))}{match.location ? ` · ${match.location}` : ""}</p></div><div className="export-actions"><button onClick={() => exportEightBallImage(match)}>战绩长图</button><button onClick={() => printEightBall(match)}>打印 / PDF</button><button onClick={() => exportEightBallJson(match)}>JSON 备份</button></div></header><section className="eight-result">{match.players.map((player) => <article key={player.id}><b>{player.name}</b><strong>{stats[player.id].score}</strong><small>普胜 {stats[player.id].normal} · 炸清 {stats[player.id].breakClear} · 接清 {stats[player.id].runout} · 犯规 {stats[player.id].fouls}</small></article>)}</section><section className="eight-ledger history"><div className="section-heading"><div><p className="kicker">FULL ROUND LOG</p><h2>逐局完整流水</h2></div><span>原始事件 {match.events.length} 条 · 版本 {match.matchVersion}</span></div>{rounds.map((round, index) => <article key={round.eventId}><span>第 {index + 1} 局</span><div><b>{match.players.find((p) => p.id === round.winnerId)?.name} · {EIGHT_BALL_WIN_LABELS[round.winType]}</b><small>开球：{match.players.find((p) => p.id === round.serverId)?.name} · 犯规 {match.players.map((p) => `${p.name} ${round.fouls[p.id] ?? 0}`).join(" / ")} · {durationLabel(round.confirmedAt - round.startedAt)}{round.note ? ` · ${round.note}` : ""}</small></div><strong>{match.players.map((p) => round.after[p.id] ?? 0).join(" : ")}</strong></article>)}</section><details className="raw-events"><summary>查看追加式原始事件与更正记录（{match.events.length}）</summary>{match.events.map((event) => <pre key={event.id}>{JSON.stringify(event, null, 2)}</pre>)}</details></div>;
 }
 
+function LocalMigrationPanel() {
+  const [migration, setMigration] = useState<PreparedLocalMigration | null>(null);
+  const [backupDownloaded, setBackupDownloaded] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const scan = async () => {
+    setBusy(true); setMessage(""); setConfirmed(false); setBackupDownloaded(false);
+    try { setMigration(await prepareLocalMigration(browserStore())); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "本机数据扫描失败"); }
+    finally { setBusy(false); }
+  };
+  const backup = () => {
+    if (!migration) return;
+    downloadMigrationBackup(migration); setBackupDownloaded(true);
+    setMessage("完整 JSON 备份已下载，请妥善保存后再确认迁移");
+  };
+  const upload = async () => {
+    if (!migration || !confirmed || !backupDownloaded) return;
+    setBusy(true); setMessage("正在连接账号并迁移…");
+    try {
+      const store = browserStore();
+      let deviceKey = store.getRaw(SYNC_DEVICE_KEY);
+      if (!deviceKey) { deviceKey = crypto.randomUUID(); store.setRaw(SYNC_DEVICE_KEY, deviceKey); }
+      const response = await fetch("/api/devices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deviceKey, name: navigator.platform || "浏览器设备" }) });
+      const payload = await response.json() as { device?: { id: string }; error?: string };
+      if (!response.ok || !payload.device) throw new Error(payload.error ?? "请先登录账号后再迁移");
+      const result = await uploadLocalMigration(migration, { deviceId: payload.device.id });
+      recordMigrationUpload(store, result);
+      setMessage(`迁移完成：成功 ${result.summary.accepted}，已存在 ${result.summary.duplicate}，失败 ${result.summary.failed}，取消 ${result.summary.cancelled}`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "迁移失败，可保留当前备份后重试"); }
+    finally { setBusy(false); }
+  };
+  return <section className="migration-panel"><header><p className="kicker">R3 · LOCAL MIGRATION</p><h2>本机数据迁移</h2><p>扫描只读取本机存档；下载完整备份并明确确认前，不会注册设备、上传或修改原始数据。</p></header>{!migration ? <button className="primary" disabled={busy} onClick={scan}>{busy ? "正在扫描…" : "扫描本机数据"}</button> : <><div className="migration-counts"><span><b>{migration.preview.players}</b>玩家</span><span><b>{migration.preview.presets}</b>预设</span><span><b>{migration.preview.decks}</b>牌组</span><span><b>{migration.preview.matches}</b>对局</span><span><b>{migration.preview.eightBallRounds}</b>中八流水</span></div><small className="migration-checksum">备份校验和：{migration.backup.checksum}</small><div className="migration-actions"><button className="secondary" onClick={scan} disabled={busy}>重新扫描</button><button className="secondary" onClick={backup} disabled={busy}>下载完整 JSON 备份</button></div><label className="migration-confirm"><input type="checkbox" checked={confirmed} disabled={!backupDownloaded || busy} onChange={(event) => setConfirmed(event.target.checked)} /><span>我已保存备份，并确认把以上数据迁移到当前登录账号</span></label><button className="primary" disabled={!confirmed || !backupDownloaded || busy || migration.resources.length === 0} onClick={upload}>{busy ? "正在迁移…" : "确认并开始迁移"}</button></>}{message && <p className="migration-message" role="status">{message}</p>}</section>;
+}
+
 function ProfilePage({ history }: { history: BilliardsMatch[] }) {
-  return <div className="content-page page-shell"><header className="profile-hero"><span className="profile-avatar">游</span><div><p className="kicker">LOCAL GUEST · V{APP_VERSION}</p><h1>游客模式</h1><p>R2 本地核心功能版，核心能力无需注册，本机数据会持续保存。</p></div><button className="secondary" disabled>登录 / 注册 · 即将开放</button></header><section className="local-stats"><div><strong>{history.length}</strong><span>已完成对局</span></div><div><strong>{history.reduce((sum, match) => sum + match.scoreEvents.length, 0)}</strong><span>计分流水</span></div><div><strong>{history.reduce((sum, match) => sum + (match.cards?.events.length ?? 0), 0)}</strong><span>卡牌事件</span></div></section><section className="settings-list"><header><p className="kicker">LOCAL DATA</p><h2>本机资料</h2></header><div><span>4</span><p><b>R2 应用版本</b><small>当前预览版本 v{APP_VERSION}</small></p><strong className="state-good">预览中</strong></div><div><span>◎</span><p><b>本地自动保存</b><small>刷新页面仍可恢复未结束对局</small></p><strong className="state-good">已开启</strong></div><div><span>⇅</span><p><b>云端同步</b><small>账户与跨设备同步将在认证阶段开放</small></p><strong>未连接</strong></div><div><span>○</span><p><b>常用球友</b><small>登录后保存注册玩家与临时球友</small></p><strong>即将开放</strong></div></section></div>;
+  return <div className="content-page page-shell"><header className="profile-hero"><span className="profile-avatar">游</span><div><p className="kicker">LOCAL GUEST · V{APP_VERSION}</p><h1>游客模式</h1><p>R2 本地核心功能版，核心能力无需注册，本机数据会持续保存。</p></div><button className="secondary" disabled>登录 / 注册 · 即将开放</button></header><section className="local-stats"><div><strong>{history.length}</strong><span>已完成对局</span></div><div><strong>{history.reduce((sum, match) => sum + match.scoreEvents.length, 0)}</strong><span>计分流水</span></div><div><strong>{history.reduce((sum, match) => sum + (match.cards?.events.length ?? 0), 0)}</strong><span>卡牌事件</span></div></section><section className="settings-list"><header><p className="kicker">LOCAL DATA</p><h2>本机资料</h2></header><div><span>4</span><p><b>R2 应用版本</b><small>当前预览版本 v{APP_VERSION}</small></p><strong className="state-good">预览中</strong></div><div><span>◎</span><p><b>本地自动保存</b><small>刷新页面仍可恢复未结束对局</small></p><strong className="state-good">已开启</strong></div><div><span>⇅</span><p><b>云端同步</b><small>账户与跨设备同步将在认证阶段开放</small></p><strong>未连接</strong></div><div><span>○</span><p><b>常用球友</b><small>登录后保存注册玩家与临时球友</small></p><strong>即将开放</strong></div></section><LocalMigrationPanel /></div>;
 }
 
 function ConfirmDialog({ title, body, onCancel, onConfirm }: { title: string; body: string; onCancel: () => void; onConfirm: () => void }) {
@@ -737,11 +691,11 @@ export default function GameApp() {
     const onPopState = () => setPath(window.location.pathname || "/");
     window.addEventListener("popstate", onPopState);
     const frame = window.requestAnimationFrame(() => {
-      const loaded = loadAppData();
-      setData(loaded.data);
+      const loaded = loadAppData(browserStore());
+      setData(loaded.value);
       setStorageIssue(loaded.issue ?? null);
       setPath(window.location.pathname || "/");
-      setEightDefaultLayout(localStorage.getItem("billiards-eight-layout:v1") === "split" ? "split" : "stacked");
+      setEightDefaultLayout(browserStore().getRaw(EIGHT_BALL_LAYOUT_KEY) === "split" ? "split" : "stacked");
       setReady(true);
     });
     return () => {
@@ -751,7 +705,7 @@ export default function GameApp() {
   }, []);
 
   useEffect(() => {
-    if (ready && !storageIssue) localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(data));
+    if (ready && !storageIssue) browserStore().write(APP_DATA_CODEC, data);
   }, [data, ready, storageIssue]);
 
   useEffect(() => {
@@ -777,7 +731,7 @@ export default function GameApp() {
 
   const updateActive = (match: BilliardsMatch) => setData((current) => ({ ...current, activeMatch: match }));
   const updateEight = (match: EightBallMatch) => {
-    localStorage.setItem("billiards-eight-layout:v1", match.layout);
+    browserStore().setRaw(EIGHT_BALL_LAYOUT_KEY, match.layout);
     setEightDefaultLayout(match.layout);
     setData((current) => ({ ...current, activeEightBallMatch: match }));
   };
@@ -802,7 +756,7 @@ export default function GameApp() {
   const startEight = (draft: EightBallDraft) => {
     if (data.activeMatch || data.activeEightBallMatch) return;
     const match = createEightBallMatch(draft);
-    localStorage.setItem("billiards-eight-layout:v1", match.layout);
+    browserStore().setRaw(EIGHT_BALL_LAYOUT_KEY, match.layout);
     setData({ ...data, activeEightBallMatch: match });
     setEightSetupOpen(false);
     navigate("/");
@@ -849,15 +803,16 @@ export default function GameApp() {
     setStatus("已恢复保存的未结束对局");
   };
   const retryStorage = () => {
-    const loaded = loadAppData();
-    setData(loaded.data);
+    const loaded = loadAppData(browserStore());
+    setData(loaded.value);
     setStorageIssue(loaded.issue ?? null);
     if (!loaded.issue) setStatus("本机数据已恢复");
   };
   const resetStorage = () => {
     if (!storageIssue) return;
-    localStorage.setItem(`${APP_STORAGE_KEY}:corrupt-backup:${Date.now()}`, storageIssue.raw);
-    localStorage.removeItem(APP_STORAGE_KEY);
+    const store = browserStore();
+    store.setRaw(`${APP_STORAGE_KEY}:corrupt-backup:${Date.now()}`, storageIssue.raw);
+    store.remove(APP_STORAGE_KEY);
     setData(EMPTY_DATA);
     setStorageIssue(null);
     setStatus("原始数据已备份，本机数据已安全重置");
