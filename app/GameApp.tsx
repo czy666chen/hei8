@@ -39,11 +39,31 @@ import {
   undoCardAction,
   updateMatchCardSettings,
 } from "../src/lib/match";
+import {
+  calculateEightBallStats,
+  correctEightBallRound,
+  createEightBallMatch,
+  EIGHT_BALL_WIN_LABELS,
+  eightBallElapsedMs,
+  EightBallDraft,
+  EightBallLayout,
+  EightBallMatch,
+  EightBallServeRule,
+  EightBallWinType,
+  finishEightBallMatch,
+  getEffectiveEightBallRounds,
+  isEightBallMatch,
+  pauseEightBallMatch,
+  recordEightBallRound,
+  renameEightBallPlayer,
+  resumeEightBallMatch,
+  undoLastEightBallRound,
+} from "../src/lib/eight-ball";
 
 const APP_STORAGE_KEY = "billiards-club-assistant:v1";
 const CARD_STORAGE_KEY = "billiards-trick-cards:v2";
 const LEGACY_CARD_STORAGE_KEY = "neon-pool-cards:v1";
-const APP_VERSION = "4.0.1";
+const APP_VERSION = "4.1.0";
 
 type AppData = {
   version: 1;
@@ -53,6 +73,8 @@ type AppData = {
   scorePresets: ScorePreset[];
   pausedMatches: BilliardsMatch[];
   recoverySnapshots: { match: BilliardsMatch; abandonedAt: number; reason: string }[];
+  activeEightBallMatch: EightBallMatch | null;
+  eightBallHistory: EightBallMatch[];
 };
 
 type ScorePreset = { id: string; name: string; rules: ScoreRule[] };
@@ -61,7 +83,7 @@ const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
 
 type StorageIssue = { message: string; raw: string };
 
-const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES, scorePresets: [], pausedMatches: [], recoverySnapshots: [] };
+const EMPTY_DATA: AppData = { version: 1, activeMatch: null, history: [], savedRules: DEFAULT_RULES, scorePresets: [], pausedMatches: [], recoverySnapshots: [], activeEightBallMatch: null, eightBallHistory: [] };
 
 const NAV_ITEMS = [
   { path: "/", label: "对局", icon: "◎" },
@@ -128,6 +150,8 @@ function parseAppData(raw: string | null): AppData | null {
         recoverySnapshots: Array.isArray(data.recoverySnapshots)
           ? data.recoverySnapshots.filter((item) => item && isStoredMatch(item.match))
           : [],
+        activeEightBallMatch: isEightBallMatch(data.activeEightBallMatch) ? data.activeEightBallMatch : null,
+        eightBallHistory: Array.isArray(data.eightBallHistory) ? data.eightBallHistory.filter(isEightBallMatch) : [],
       };
     }
   }
@@ -187,7 +211,7 @@ function AppHeader({ path, active, onNavigate }: { path: string; active: boolean
   );
 }
 
-function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart: (mode: MatchMode) => void; onNavigate: (path: string) => void; onResume: (id: string) => void; recent?: BilliardsMatch; paused: BilliardsMatch[] }) {
+function EmptyHome({ onStart, onStartEight, onNavigate, onResume, recent, paused }: { onStart: (mode: MatchMode) => void; onStartEight: () => void; onNavigate: (path: string) => void; onResume: (id: string) => void; recent?: BilliardsMatch; paused: BilliardsMatch[] }) {
   return (
     <div className="home-page page-shell">
       <section className="welcome-panel">
@@ -196,7 +220,8 @@ function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart:
           <h1>今晚这桌，<br /><em>玩点不一样。</em></h1>
           <p className="lead">追分、抽牌、记流水，一部手机就能管好整场朋友局。</p>
           <div className="welcome-actions">
-            <button className="primary" onClick={() => onStart("score")}>开始追分局 <span>→</span></button>
+            <button className="primary" onClick={onStartEight}>开始中八比赛 <span>→</span></button>
+            <button className="secondary" onClick={() => onStart("score")}>开始追分局</button>
             <button className="secondary" onClick={() => onStart("cards")}>开始奇招牌局</button>
           </div>
         </div>
@@ -211,6 +236,7 @@ function EmptyHome({ onStart, onNavigate, onResume, recent, paused }: { onStart:
       {!!paused.length && <section className="paused-matches" aria-label="已保存的未结束对局"><div><p className="kicker">SAVED MATCHES</p><h2>继续未结束对局</h2></div>{paused.map((match) => <button key={match.id} onClick={() => onResume(match.id)}><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {match.scoreEvents.length} 笔计分</small><span>继续 →</span></button>)}</section>}
 
       <section className="quick-grid" aria-label="快速开始">
+        <button onClick={onStartEight}><span className="quick-icon red">8</span><div><b>中八双人计分板</b><small>抢 N / 自由局 · 逐局流水</small></div><i>→</i></button>
         <button onClick={() => onStart("score")}><span className="quick-icon mint">＋</span><div><b>多人追分</b><small>2–8 人 · 分值可配 · 自动排名</small></div><i>→</i></button>
         <button onClick={() => onStart("score_cards")}><span className="quick-icon cyan">◇</span><div><b>追分 + 奇招牌</b><small>计分和抽牌同时进行</small></div><i>→</i></button>
         <button onClick={() => onNavigate("/play")}><span className="quick-icon violet">▦</span><div><b>更多娱乐玩法</b><small>查看规则与即将推出的挑战</small></div><i>→</i></button>
@@ -561,8 +587,9 @@ function ActiveMatchView({ match, onChange, onFinish, toast }: { match: Billiard
   );
 }
 
-function PlayPage({ onStart }: { onStart: (mode: MatchMode) => void }) {
+function PlayPage({ onStart, onStartEight }: { onStart: (mode: MatchMode) => void; onStartEight: () => void }) {
   return <div className="content-page page-shell"><header className="page-title"><p className="kicker">PLAY MODES</p><h1>今天想怎么玩？</h1><p>从轻松抽牌到完整追分，每种玩法都能独立开始，也能自由组合。</p></header><div className="mode-grid">
+    <article className="mode-card featured"><span className="mode-number">00</span><div className="mode-symbol score">8</div><p className="kicker">CHINESE EIGHT</p><h2>中八双人赛</h2><p>红蓝二等分计分板，记录普胜、炸清、接清、犯规和逐局可追溯流水。</p><ul><li>2 人</li><li>抢 N / 自由局</li><li>离线可用</li></ul><div><button className="primary" onClick={onStartEight}>开始中八设置 <span>→</span></button></div></article>
     <article className="mode-card featured"><span className="mode-number">01</span><div className="mode-symbol">8</div><p className="kicker">TRICK DECK</p><h2>奇招卡牌局</h2><p>51 张实体牌，不放回抽取。每一杆多一个意外，也保留安全跳过机制。</p><ul><li>2 人推荐</li><li>15–60 分钟</li><li>轻松</li></ul><div><button className="secondary" onClick={() => onStart("cards")}>查看并开始</button></div></article>
     <article className="mode-card"><span className="mode-number">02</span><div className="mode-symbol score">＋</div><p className="kicker">SCORE CHASE</p><h2>多人追分</h2><p>快速记录普胜、小金、大金和犯规，自动轮转与排名，适合整晚朋友局。</p><ul><li>2–8 人</li><li>30–120 分钟</li><li>可配规则</li></ul><div><button className="primary" onClick={() => onStart("score")}>开始设置 <span>→</span></button><button className="text-button" onClick={() => onStart("score_cards")}>同时加入奇招牌</button></div></article>
     {[["03","▦","九宫格挑战"],["04","♛","擂台模式"],["05","◷","限时闯关"]].map(([number, symbol, title]) => <article className="mode-card upcoming" key={number}><span className="mode-number">{number}</span><div className="mode-symbol">{symbol}</div><p className="kicker">COMING SOON</p><h2>{title}</h2><p>路线图后续玩法，核心对局稳定后开放。</p><span className="soon-chip">筹备中</span></article>)}
@@ -575,16 +602,93 @@ function DecksPage() {
   return <div className="content-page page-shell"><header className="page-title split"><div><p className="kicker">DECK LIBRARY</p><h1>牌组</h1><p>四个官方牌组均按版本保存完整快照，后续更新不会改变旧战绩。</p></div><div className="deck-summary"><span>4<small>官方牌组</small></span><span>V1<small>当前版本</small></span></div></header><div className="official-deck-grid">{OFFICIAL_DECKS.map((deck) => <section className="official-deck" key={deck.id}><div className="official-art"><span>8</span></div><div><p className="kicker">OFFICIAL · V{deck.version}</p><h2>{deck.name}</h2><p>{deck.description}</p><div className="tag-row"><span>{officialDeckCardCount(deck)} 张</span><span>{deck.difficulty}</span><span>{deck.safety}</span></div></div></section>)}</div><section className="card-catalog"><div className="section-heading"><div><p className="kicker">ALL CARDS</p><h2>完整卡牌清单</h2></div><label className="search"><span>⌕</span><input type="search" placeholder="搜索名称或效果" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><div className="catalog-list">{cards.map((card) => <article key={card.id}><span>{card.id.slice(-3)}</span><div><b>{card.title}{card.count > 1 && <em> ×{card.count}</em>}</b><p>{card.effect}</p>{card.safetyNote && <small>! {card.safetyNote}</small>}</div></article>)}</div></section></div>;
 }
 
+function EightBallSetupDialog({ defaultLayout, onClose, onStart }: { defaultLayout: EightBallLayout; onClose: () => void; onStart: (draft: EightBallDraft) => void }) {
+  const [names, setNames] = useState<[string, string]>(["玩家 A", "玩家 B"]);
+  const [raceMode, setRaceMode] = useState<"race" | "free">("race");
+  const [raceTo, setRaceTo] = useState(5);
+  const [firstServer, setFirstServer] = useState<0 | 1>(0);
+  const [serveRule, setServeRule] = useState<EightBallServeRule>("alternate");
+  const [layout, setLayout] = useState<EightBallLayout>(defaultLayout);
+  const [title, setTitle] = useState("");
+  const [location, setLocation] = useState("");
+  const [note, setNote] = useState("");
+  const valid = names.every((name) => name.trim()) && (raceMode === "free" || (Number.isInteger(raceTo) && raceTo >= 1 && raceTo <= 99));
+  return <div className="modal-backdrop"><section className="setup-modal eight-setup" role="dialog" aria-modal="true"><header className="modal-heading"><div><p className="kicker">CHINESE EIGHT · NEW MATCH</p><h2>创建中八比赛</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="setup-body"><section className="setup-section"><div className="setup-title"><span>01</span><div><b>双方选手</b><small>稳定选手 ID，不受比赛中改名影响</small></div></div><div className="player-inputs">{names.map((name, index) => <label className="player-input" key={index}><span>{index ? "蓝" : "红"}</span><input aria-label={`中八玩家 ${index + 1} 姓名`} maxLength={16} value={name} onChange={(event) => setNames(names.map((item, itemIndex) => itemIndex === index ? event.target.value : item) as [string, string])} /></label>)}</div></section><section className="setup-section"><div className="setup-title"><span>02</span><div><b>赛制与开球</b><small>达到目标后仍由你确认结束</small></div></div><div className="eight-form-grid"><label><span>赛制</span><select value={raceMode} onChange={(event) => setRaceMode(event.target.value as "race" | "free")}><option value="race">抢 N 局</option><option value="free">自由计分</option></select></label>{raceMode === "race" && <label><span>抢几局</span><input type="number" min="1" max="99" value={raceTo} onChange={(event) => setRaceTo(Number(event.target.value))} /></label>}<label><span>先开球</span><select value={firstServer} onChange={(event) => setFirstServer(Number(event.target.value) as 0 | 1)}><option value={0}>{names[0] || "玩家 A"}</option><option value={1}>{names[1] || "玩家 B"}</option></select></label><label><span>后续开球</span><select value={serveRule} onChange={(event) => setServeRule(event.target.value as EightBallServeRule)}><option value="alternate">轮流开球</option><option value="winner">胜者开球</option></select></label><label><span>计分板布局</span><select value={layout} onChange={(event) => setLayout(event.target.value as EightBallLayout)}><option value="stacked">上下二等分</option><option value="split">左右二等分</option></select></label></div></section><section className="setup-section"><div className="setup-title"><span>03</span><div><b>比赛资料</b><small>全部可选，将进入战绩导出</small></div></div><div className="eight-form-grid"><label><span>比赛名称</span><input maxLength={40} value={title} onChange={(event) => setTitle(event.target.value)} /></label><label><span>地点</span><input maxLength={40} value={location} onChange={(event) => setLocation(event.target.value)} /></label><label className="wide"><span>备注</span><input maxLength={120} value={note} onChange={(event) => setNote(event.target.value)} /></label></div></section></div><footer className="modal-actions"><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={!valid} onClick={() => onStart({ playerNames: names, raceTo: raceMode === "race" ? raceTo : null, firstServer, serveRule, layout, title, location, note })}>确认并开始 <span>→</span></button></footer></section></div>;
+}
+
+function durationLabel(ms: number) {
+  const seconds = Math.floor(ms / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours ? `${hours}:` : ""}${String(minutes).padStart(hours ? 2 : 1, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function downloadText(filename: string, content: string, type: string) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url);
+}
+
+function exportEightBallJson(match: EightBallMatch) {
+  const payload = { exportVersion: 1, exportedAt: new Date().toISOString(), match, effectiveRounds: getEffectiveEightBallRounds(match), stats: calculateEightBallStats(match) };
+  downloadText(`中八战绩-${match.id}.json`, JSON.stringify(payload, null, 2), "application/json");
+}
+
+function printEightBall(match: EightBallMatch) {
+  const stats = calculateEightBallStats(match); const rounds = getEffectiveEightBallRounds(match);
+  const popup = window.open("", "_blank", "noopener,noreferrer"); if (!popup) return;
+  popup.document.write(`<!doctype html><meta charset="utf-8"><title>中八战绩</title><style>body{font-family:system-ui;padding:32px;color:#17231d}h1{margin-bottom:4px}.score{display:flex;gap:30px;font-size:28px;font-weight:800}table{width:100%;border-collapse:collapse;margin-top:24px}th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left}@media print{button{display:none}}</style><h1>${match.title || "中八双人赛"}</h1><p>${match.location || "未填写地点"} · ${new Date(match.startedAt).toLocaleString("zh-CN")} · ${match.raceTo ? `抢 ${match.raceTo} 局` : "自由局"}</p><div class="score">${match.players.map((p) => `<span>${p.name} ${stats[p.id].score}</span>`).join("")}</div><table><thead><tr><th>局</th><th>开球</th><th>胜者</th><th>胜法</th><th>犯规</th><th>比分</th><th>用时</th><th>备注</th></tr></thead><tbody>${rounds.map((r, i) => `<tr><td>${i + 1}</td><td>${match.players.find(p => p.id === r.serverId)?.name}</td><td>${match.players.find(p => p.id === r.winnerId)?.name}</td><td>${EIGHT_BALL_WIN_LABELS[r.winType]}</td><td>${match.players.map(p => `${p.name} ${r.fouls[p.id] ?? 0}`).join(" / ")}</td><td>${match.players.map(p => r.after[p.id] ?? 0).join(" : ")}</td><td>${durationLabel(r.confirmedAt-r.startedAt)}</td><td>${r.note}</td></tr>`).join("")}</tbody></table><p>事件 ${match.events.length} 条 · match_version ${match.matchVersion}</p><button onclick="print()">打印 / 另存 PDF</button>`); popup.document.close();
+}
+
+function exportEightBallImage(match: EightBallMatch) {
+  const stats = calculateEightBallStats(match); const rounds = getEffectiveEightBallRounds(match); const height = 360 + rounds.length * 44;
+  const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
+  const rows = rounds.map((round, index) => `<text x="50" y="${330 + index * 44}" class="row">${index + 1}. ${escape(match.players.find((p) => p.id === round.winnerId)?.name ?? "")} · ${EIGHT_BALL_WIN_LABELS[round.winType]} · ${match.players.map((p) => round.after[p.id] ?? 0).join(" : ")} · ${escape(round.note)}</text>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="${height}"><style>.title{font:700 38px system-ui;fill:#eff8f2}.meta{font:18px system-ui;fill:#91a89d}.score{font:700 60px system-ui;fill:#76e6ad}.row{font:20px system-ui;fill:#dce9e1}</style><rect width="100%" height="100%" fill="#09120f"/><text x="50" y="65" class="title">${escape(match.title || "中八双人赛")}</text><text x="50" y="105" class="meta">${escape(match.location || "本地比赛")} · ${match.raceTo ? `抢 ${match.raceTo} 局` : "自由局"}</text><text x="50" y="190" class="score">${escape(match.players[0].name)} ${stats[match.players[0].id].score}  :  ${stats[match.players[1].id].score} ${escape(match.players[1].name)}</text><text x="50" y="240" class="meta">普胜 / 炸清 / 接清 / 犯规：${match.players.map(p => `${escape(p.name)} ${stats[p.id].normal}/${stats[p.id].breakClear}/${stats[p.id].runout}/${stats[p.id].fouls}`).join("　")}</text><text x="50" y="290" class="meta">逐局流水</text>${rows}</svg>`;
+  downloadText(`中八战绩-${match.id}.svg`, svg, "image/svg+xml");
+}
+
+function EightBallBoard({ match, onChange, onFinish, toast }: { match: EightBallMatch; onChange: (match: EightBallMatch) => void; onFinish: () => void; toast: (message: string) => void }) {
+  const [, tick] = useState(0); const [winnerId, setWinnerId] = useState(match.players[0].id); const [winType, setWinType] = useState<EightBallWinType>("normal"); const [fouls, setFouls] = useState<Record<string, number>>({}); const [note, setNote] = useState(""); const [roundStartedAt, setRoundStartedAt] = useState(() => Date.now()); const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  useEffect(() => { const timer = window.setInterval(() => tick((value) => value + 1), 1000); return () => window.clearInterval(timer); }, []);
+  const stats = calculateEightBallStats(match); const rounds = getEffectiveEightBallRounds(match); const reached = match.raceTo && match.players.some((player) => stats[player.id].score >= match.raceTo!);
+  const confirm = () => { const round = { winnerId, winType, fouls: Object.fromEntries(match.players.map((p) => [p.id, Math.max(0, Math.trunc(fouls[p.id] ?? 0))])), note, startedAt: roundStartedAt }; const updated = editingEventId ? correctEightBallRound(match, editingEventId, { ...round, confirmedAt: Date.now() }) : recordEightBallRound(match, round); onChange(updated); setFouls({}); setNote(""); setRoundStartedAt(Date.now()); setEditingEventId(null); toast(editingEventId ? "已追加更正事件并重新计算全部统计" : "本局已记录并自动保存"); };
+  return <div className="eight-page page-shell"><section className="eight-topbar"><div><span className="live-label"><i /> 中八比赛进行中</span><h1>{match.title || `第 ${rounds.length + 1} 局`}</h1><p>第 {rounds.length + 1} 局 · {durationLabel(eightBallElapsedMs(match))}{match.raceTo ? ` · 抢 ${match.raceTo} 局` : " · 自由局"}</p></div><div><button onClick={() => onChange({ ...match, layout: match.layout === "stacked" ? "split" : "stacked" })}>{match.layout === "stacked" ? "切换左右" : "切换上下"}</button><button onClick={() => onChange(match.pausedAt ? resumeEightBallMatch(match) : pauseEightBallMatch(match))}>{match.pausedAt ? "继续计时" : "暂停计时"}</button><button className="danger-text" onClick={onFinish}>结束比赛</button></div></section>{match.pausedAt && <div className="eight-paused">比赛已暂停，计时和逐局录入已停止。</div>}{reached && <div className="target-notice">已达到目标局数；比赛不会自动锁死，请确认无误后手动结束。</div>}<section className={`eight-scoreboard ${match.layout}`}>{match.players.map((player, index) => <article key={player.id} className={index ? "blue" : "red"}><div><input aria-label={`${player.name}姓名`} value={player.name} onChange={(event) => onChange(renameEightBallPlayer(match, player.id, event.target.value))} /><small>{index ? "BLUE" : "RED"}</small></div><strong>{stats[player.id].score}</strong><dl><div><dt>普胜</dt><dd>{stats[player.id].normal}</dd></div><div><dt>炸清</dt><dd>{stats[player.id].breakClear}</dd></div><div><dt>接清</dt><dd>{stats[player.id].runout}</dd></div><div><dt>犯规</dt><dd>{stats[player.id].fouls}</dd></div></dl></article>)}</section><section className="eight-round-panel"><div className="section-heading"><div><p className="kicker">ROUND {rounds.length + 1}</p><h2>记录本局结果</h2></div><button className="text-button" disabled={!rounds.length} onClick={() => { onChange(undoLastEightBallRound(match)); toast("已追加撤销事件，原流水保留"); }}>↶ 撤销上一局</button></div><div className="eight-winner-picker">{match.players.map((player) => <button key={player.id} className={winnerId === player.id ? "active" : ""} onClick={() => setWinnerId(player.id)}>{player.name} 获胜</button>)}</div><div className="segmented">{Object.entries(EIGHT_BALL_WIN_LABELS).map(([id, label]) => <button key={id} className={winType === id ? "active" : ""} onClick={() => setWinType(id as EightBallWinType)}>{label}</button>)}</div><div className="eight-fouls">{match.players.map((player) => <label key={player.id}><span>{player.name} 本局犯规</span><input type="number" min="0" inputMode="numeric" value={fouls[player.id] ?? 0} onChange={(event) => setFouls({ ...fouls, [player.id]: Number(event.target.value) })} /></label>)}</div><label className="score-note"><span>本局备注</span><input maxLength={120} placeholder="可选" value={note} onChange={(event) => setNote(event.target.value)} /></label><button className="primary eight-confirm" disabled={!!match.pausedAt} onClick={confirm}>确认本局并进入下一局</button></section><section className="eight-ledger"><div className="section-heading"><div><p className="kicker">APPEND-ONLY LEDGER</p><h2>逐局流水</h2></div><span>{match.events.length} 条原始事件</span></div>{[...rounds].reverse().map((round, reverseIndex) => <article key={round.eventId}><span>第 {rounds.length - reverseIndex} 局</span><div><b>{match.players.find((p) => p.id === round.winnerId)?.name} · {EIGHT_BALL_WIN_LABELS[round.winType]}</b><small>开球：{match.players.find((p) => p.id === round.serverId)?.name} · 犯规 {match.players.map((p) => `${p.name} ${round.fouls[p.id] ?? 0}`).join(" / ")} · {durationLabel(round.confirmedAt - round.startedAt)}{round.note ? ` · ${round.note}` : ""}</small></div><strong>{match.players.map((p) => round.after[p.id] ?? 0).join(" : ")}</strong><button onClick={() => { const other = match.players.find((p) => p.id !== round.winnerId)!; onChange(correctEightBallRound(match, round.eventId, { ...round, winnerId: other.id })); toast("已追加更正事件并重新计算全部统计"); }}>改判胜者</button></article>)}</section></div>;
+}
+
 function HistoryCorrectionDock({ match, onChange }: { match: BilliardsMatch; onChange: (match: BilliardsMatch) => void }) {
   const [enabled, setEnabled] = useState(false);
   const correctable = match.scoreEvents.filter((event) => event.type !== "correction" && !match.scoreEvents.some((item) => item.correctsEventId === event.id));
   return <aside className={`history-correction ${enabled ? "enabled" : ""}`}><div><b>{enabled ? "受控纠错模式已开启" : "已结束对局默认只读"}</b><small>{enabled ? "更正会追加反向事件，原流水不会删除。" : "仅在确认需要修正结算时开启。"}</small></div><button className={enabled ? "danger-button" : "secondary"} onClick={() => setEnabled(!enabled)}>{enabled ? "退出纠错" : "进入纠错模式"}</button>{enabled && <div className="history-correction-events">{correctable.length ? correctable.slice(0, 8).map((event) => <button key={event.id} onClick={() => { onChange(correctScoreEvent(match, event.id, "结束局受控更正", Date.now(), true)); setEnabled(false); }}>更正：{match.players.find((player) => player.id === event.playerId)?.name} · {event.label}</button>) : <small>当前没有可更正的计分事件。</small>}</div>}</aside>;
 }
 
-function UnifiedHistoryPage({ history, selectedId, onSelect }: { history: BilliardsMatch[]; selectedId?: string; onSelect: (id: string) => void }) {
+function scoreMatchTimeline(match: BilliardsMatch) {
+  return [
+    ...match.scoreEvents.map((event) => ({ id: event.id, kind: "积分", at: event.occurredAt, label: event.label, player: match.players.find((player) => player.id === event.playerId)?.name ?? event.playerId, detail: Object.entries(event.changes).map(([id, value]) => `${match.players.find((p) => p.id === id)?.name ?? id} ${value > 0 ? "+" : ""}${value}`).join(" / "), note: event.note ?? "", linkedId: event.linkedCardEventId })),
+    ...(match.cards?.events ?? []).map((event) => ({ id: event.id, kind: "卡牌", at: event.occurredAt, label: event.label, player: event.handId === "shared" ? "共用手牌" : match.players.find((player) => player.id === event.handId)?.name ?? event.handId, detail: event.card?.title ?? "", note: "", linkedId: event.relatedScoreEventId })),
+  ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+}
+
+function exportScoreJson(match: BilliardsMatch) {
+  downloadText(`追分战绩-${match.id}.json`, JSON.stringify({ exportVersion: 1, exportedAt: new Date().toISOString(), match, rankings: getRankings(match), timeline: scoreMatchTimeline(match) }, null, 2), "application/json");
+}
+
+function printScoreMatch(match: BilliardsMatch) {
+  const timeline = scoreMatchTimeline(match); const popup = window.open("", "_blank", "noopener,noreferrer"); if (!popup) return;
+  popup.document.write(`<!doctype html><meta charset="utf-8"><title>追分战绩</title><style>body{font-family:system-ui;padding:32px;color:#17231d}h1{margin-bottom:4px}.score{display:flex;gap:24px;font-size:24px;font-weight:800}table{width:100%;border-collapse:collapse;margin-top:24px}th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left}@media print{button{display:none}}</style><h1>${match.mode === "cards" ? "奇招卡牌局" : "追分战绩"}</h1><p>${new Date(match.startedAt).toLocaleString("zh-CN")} · ${formatDuration(match.startedAt, match.endedAt)}</p><div class="score">${getRankings(match).map((p, i) => `<span>${i + 1}. ${p.name} ${p.score} 分（开局 ${p.initialScore}）</span>`).join("")}</div><table><thead><tr><th>时间</th><th>类型</th><th>玩家</th><th>事件</th><th>变化 / 卡牌</th><th>备注</th><th>关联</th></tr></thead><tbody>${timeline.map((e) => `<tr><td>${new Date(e.at).toLocaleTimeString("zh-CN")}</td><td>${e.kind}</td><td>${e.player}</td><td>${e.label}</td><td>${e.detail}</td><td>${e.note}</td><td>${e.linkedId ?? ""}</td></tr>`).join("")}</tbody></table><button onclick="print()">打印 / 另存 PDF</button>`); popup.document.close();
+}
+
+function exportScoreImage(match: BilliardsMatch) {
+  const timeline = scoreMatchTimeline(match); const rankings = getRankings(match); const timelineStart = 205 + rankings.length * 38; const height = timelineStart + 70 + timeline.length * 40; const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
+  const rows = timeline.map((event, index) => `<text x="45" y="${timelineStart + 40 + index * 40}" class="row">${escape(new Date(event.at).toLocaleTimeString("zh-CN"))} · ${event.kind} · ${escape(event.player)} · ${escape(event.label)} · ${escape(event.detail)} ${escape(event.note)}</text>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="${height}"><style>.title{font:700 38px system-ui;fill:#eff8f2}.meta{font:18px system-ui;fill:#91a89d}.score{font:700 34px system-ui;fill:#76e6ad}.row{font:18px system-ui;fill:#dce9e1}</style><rect width="100%" height="100%" fill="#09120f"/><text x="45" y="62" class="title">追分战绩</text><text x="45" y="100" class="meta">${escape(new Date(match.startedAt).toLocaleString("zh-CN"))} · ${escape(formatDuration(match.startedAt, match.endedAt))}</text>${rankings.map((p, i) => `<text x="45" y="${155 + i * 38}" class="score">${i + 1}. ${escape(p.name)} ${p.initialScore} → ${p.score} 分</text>`).join("")}<text x="45" y="${timelineStart}" class="meta">完整事件流水</text>${rows}</svg>`;
+  downloadText(`追分战绩-${match.id}.svg`, svg, "image/svg+xml");
+}
+
+function UnifiedHistoryPage({ history, eightBallHistory, selectedId, onSelect }: { history: BilliardsMatch[]; eightBallHistory: EightBallMatch[]; selectedId?: string; onSelect: (id: string) => void }) {
   const selected = history.find((match) => match.id === selectedId);
   if (!selected) {
-    return <div className="content-page page-shell"><header className="page-title"><p className="kicker">MATCH HISTORY</p><h1>战绩</h1><p>所有已结束对局都保存在这台设备上，可查看规则快照和完整流水。</p></header>{history.length ? <div className="history-grid">{history.map((match) => { const winner = getRankings(match)[0]; return <button key={match.id} onClick={() => onSelect(match.id)}><span className="history-type">{match.mode === "cards" ? "奇招牌" : match.mode === "score_cards" ? "追分 + 奇招牌" : "多人追分"}</span><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {formatDuration(match.startedAt, match.endedAt)}</small><div><span>第一名</span><strong>{winner?.name}{match.mode !== "cards" && ` · ${winner?.score} 分`}</strong><i>→</i></div></button>; })}</div> : <div className="large-empty"><span>⌁</span><h2>还没有战绩</h2><p>完成第一场对局后，排名、计分与卡牌流水都会保存在这里。</p></div>}</div>;
+    const all = [...history.map((match) => ({ at: match.endedAt ?? match.startedAt, kind: "legacy" as const, match })), ...eightBallHistory.map((match) => ({ at: match.endedAt ?? match.startedAt, kind: "eight" as const, match }))].sort((a, b) => b.at - a.at);
+    return <div className="content-page page-shell"><header className="page-title"><p className="kicker">MATCH HISTORY</p><h1>战绩</h1><p>中八与追分使用统一的战绩入口，可查看完整流水并导出。</p></header>{all.length ? <div className="history-grid">{all.map((item) => { if (item.kind === "eight") { const match = item.match; const stats = calculateEightBallStats(match); const winner = [...match.players].sort((a, b) => stats[b.id].score - stats[a.id].score)[0]; return <button key={match.id} onClick={() => onSelect(match.id)}><span className="history-type eight">中八双人赛</span><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {durationLabel(eightBallElapsedMs(match))}</small><div><span>获胜者</span><strong>{winner.name} · {match.players.map((p) => stats[p.id].score).join(" : ")}</strong><i>→</i></div></button>; } const match = item.match; const winner = getRankings(match)[0]; return <button key={match.id} onClick={() => onSelect(match.id)}><span className="history-type">{match.mode === "cards" ? "奇招牌" : match.mode === "score_cards" ? "追分 + 奇招牌" : "多人追分"}</span><b>{match.players.map((player) => player.name).join(" · ")}</b><small>{formatTime(match.startedAt)} · {formatDuration(match.startedAt, match.endedAt)}</small><div><span>第一名</span><strong>{winner?.name}{match.mode !== "cards" && ` · ${winner?.score} 分`}</strong><i>→</i></div></button>; })}</div> : <div className="large-empty"><span>⌁</span><h2>还没有战绩</h2><p>完成第一场比赛后，逐局流水会保存在这里。</p></div>}</div>;
   }
   const rankings = getRankings(selected);
   const timeline = [
@@ -592,7 +696,12 @@ function UnifiedHistoryPage({ history, selectedId, onSelect }: { history: Billia
     ...(selected.cards?.events ?? []).map((event) => ({ id: event.id, kind: "card" as const, at: event.occurredAt, label: event.label, value: undefined, note: undefined, linkedId: event.relatedScoreEventId })),
   ].sort((a, b) => b.at - a.at || b.id.localeCompare(a.id));
   const jumpTo = (id: string) => document.getElementById(`timeline-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  return <div className="content-page page-shell"><button className="back-link" onClick={() => onSelect("")}>← 返回战绩</button><header className="page-title"><p className="kicker">MATCH DETAIL</p><h1>{selected.mode === "cards" ? "奇招卡牌局" : "追分结算"}</h1><p>{formatTime(selected.startedAt)} · {formatDuration(selected.startedAt, selected.endedAt)}</p></header><section className="result-podium">{rankings.map((player, index) => <div key={player.id}><span>{index + 1}</span><b>{player.name}</b><strong>{player.score}<small> 分</small></strong><small>较开局 {player.score - player.initialScore >= 0 ? "+" : ""}{player.score - player.initialScore}</small></div>)}</section><section className="event-stats"><div><strong>{selected.scoreEvents.length}</strong><span>计分事件</span></div><div><strong>{selected.cards?.events.length ?? 0}</strong><span>卡牌事件</span></div><div><strong>{timeline.filter((event) => event.linkedId).length / 2}</strong><span>牌分联动</span></div></section><section className="history-detail"><div className="section-heading"><div><p className="kicker">UNIFIED TIMELINE</p><h2>真实发生顺序</h2></div></div>{timeline.map((event) => <div className={`timeline-row unified ${event.kind}`} id={`timeline-${event.id}`} key={event.id}><span>{formatTime(event.at)}</span><div><b><i>{event.kind === "score" ? "积分" : "卡牌"}</i>{event.label}</b>{event.note && <small>{event.note}</small>}{event.linkedId && <button onClick={() => jumpTo(event.linkedId!)}>查看关联{event.kind === "score" ? "卡牌" : "积分"} ↕</button>}</div>{event.value !== undefined && <strong className={event.value < 0 ? "negative" : "positive"}>{event.value > 0 ? "+" : ""}{event.value}</strong>}</div>)}</section></div>;
+  return <div className="content-page page-shell"><button className="back-link" onClick={() => onSelect("")}>← 返回战绩</button><header className="page-title split"><div><p className="kicker">MATCH DETAIL</p><h1>{selected.mode === "cards" ? "奇招卡牌局" : "追分结算"}</h1><p>{formatTime(selected.startedAt)} · {formatDuration(selected.startedAt, selected.endedAt)}</p></div><div className="export-actions"><button onClick={() => exportScoreImage(selected)}>战绩长图</button><button onClick={() => printScoreMatch(selected)}>打印 / PDF</button><button onClick={() => exportScoreJson(selected)}>JSON 备份</button></div></header><section className="result-podium">{rankings.map((player, index) => <div key={player.id}><span>{index + 1}</span><b>{player.name}</b><strong>{player.score}<small> 分</small></strong><small>较开局 {player.score - player.initialScore >= 0 ? "+" : ""}{player.score - player.initialScore}</small></div>)}</section><section className="event-stats"><div><strong>{selected.scoreEvents.length}</strong><span>计分事件</span></div><div><strong>{selected.cards?.events.length ?? 0}</strong><span>卡牌事件</span></div><div><strong>{timeline.filter((event) => event.linkedId).length / 2}</strong><span>牌分联动</span></div></section><section className="history-detail"><div className="section-heading"><div><p className="kicker">UNIFIED TIMELINE</p><h2>真实发生顺序</h2></div></div>{timeline.map((event) => <div className={`timeline-row unified ${event.kind}`} id={`timeline-${event.id}`} key={event.id}><span>{formatTime(event.at)}</span><div><b><i>{event.kind === "score" ? "积分" : "卡牌"}</i>{event.label}</b>{event.note && <small>{event.note}</small>}{event.linkedId && <button onClick={() => jumpTo(event.linkedId!)}>查看关联{event.kind === "score" ? "卡牌" : "积分"} ↕</button>}</div>{event.value !== undefined && <strong className={event.value < 0 ? "negative" : "positive"}>{event.value > 0 ? "+" : ""}{event.value}</strong>}</div>)}</section></div>;
+}
+
+function EightBallHistoryDetail({ match, onBack }: { match: EightBallMatch; onBack: () => void }) {
+  const stats = calculateEightBallStats(match); const rounds = getEffectiveEightBallRounds(match);
+  return <div className="content-page page-shell"><button className="back-link" onClick={onBack}>← 返回战绩</button><header className="page-title split"><div><p className="kicker">CHINESE EIGHT · MATCH REPORT</p><h1>{match.title || "中八双人赛"}</h1><p>{formatTime(match.startedAt)} · {durationLabel(eightBallElapsedMs(match))}{match.location ? ` · ${match.location}` : ""}</p></div><div className="export-actions"><button onClick={() => exportEightBallImage(match)}>战绩长图</button><button onClick={() => printEightBall(match)}>打印 / PDF</button><button onClick={() => exportEightBallJson(match)}>JSON 备份</button></div></header><section className="eight-result">{match.players.map((player) => <article key={player.id}><b>{player.name}</b><strong>{stats[player.id].score}</strong><small>普胜 {stats[player.id].normal} · 炸清 {stats[player.id].breakClear} · 接清 {stats[player.id].runout} · 犯规 {stats[player.id].fouls}</small></article>)}</section><section className="eight-ledger history"><div className="section-heading"><div><p className="kicker">FULL ROUND LOG</p><h2>逐局完整流水</h2></div><span>原始事件 {match.events.length} 条 · 版本 {match.matchVersion}</span></div>{rounds.map((round, index) => <article key={round.eventId}><span>第 {index + 1} 局</span><div><b>{match.players.find((p) => p.id === round.winnerId)?.name} · {EIGHT_BALL_WIN_LABELS[round.winType]}</b><small>开球：{match.players.find((p) => p.id === round.serverId)?.name} · 犯规 {match.players.map((p) => `${p.name} ${round.fouls[p.id] ?? 0}`).join(" / ")} · {durationLabel(round.confirmedAt - round.startedAt)}{round.note ? ` · ${round.note}` : ""}</small></div><strong>{match.players.map((p) => round.after[p.id] ?? 0).join(" : ")}</strong></article>)}</section><details className="raw-events"><summary>查看追加式原始事件与更正记录（{match.events.length}）</summary>{match.events.map((event) => <pre key={event.id}>{JSON.stringify(event, null, 2)}</pre>)}</details></div>;
 }
 
 function ProfilePage({ history }: { history: BilliardsMatch[] }) {
@@ -616,6 +725,8 @@ export default function GameApp() {
   const [data, setData] = useState<AppData>(EMPTY_DATA);
   const [path, setPath] = useState("/");
   const [setupMode, setSetupMode] = useState<MatchMode | null>(null);
+  const [eightSetupOpen, setEightSetupOpen] = useState(false);
+  const [eightDefaultLayout, setEightDefaultLayout] = useState<EightBallLayout>("stacked");
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [pendingMode, setPendingMode] = useState<MatchMode | null>(null);
   const [discardArmed, setDiscardArmed] = useState(false);
@@ -630,6 +741,7 @@ export default function GameApp() {
       setData(loaded.data);
       setStorageIssue(loaded.issue ?? null);
       setPath(window.location.pathname || "/");
+      setEightDefaultLayout(localStorage.getItem("billiards-eight-layout:v1") === "split" ? "split" : "stacked");
       setReady(true);
     });
     return () => {
@@ -664,6 +776,11 @@ export default function GameApp() {
   };
 
   const updateActive = (match: BilliardsMatch) => setData((current) => ({ ...current, activeMatch: match }));
+  const updateEight = (match: EightBallMatch) => {
+    localStorage.setItem("billiards-eight-layout:v1", match.layout);
+    setEightDefaultLayout(match.layout);
+    setData((current) => ({ ...current, activeEightBallMatch: match }));
+  };
   const complete = () => {
     if (!data.activeMatch) return;
     const completed = finishMatch(data.activeMatch);
@@ -673,7 +790,32 @@ export default function GameApp() {
     setStatus("对局已结束，完整战绩已保存");
   };
 
+  const completeEight = () => {
+    if (!data.activeEightBallMatch) return;
+    const completed = finishEightBallMatch(data.activeEightBallMatch);
+    setData({ ...data, activeEightBallMatch: null, eightBallHistory: [completed, ...data.eightBallHistory] });
+    setConfirmEnd(false);
+    navigate(`/history/${completed.id}`);
+    setStatus("中八比赛已结束，完整逐局战绩已保存");
+  };
+
+  const startEight = (draft: EightBallDraft) => {
+    if (data.activeMatch || data.activeEightBallMatch) return;
+    const match = createEightBallMatch(draft);
+    localStorage.setItem("billiards-eight-layout:v1", match.layout);
+    setData({ ...data, activeEightBallMatch: match });
+    setEightSetupOpen(false);
+    navigate("/");
+    setStatus("中八比赛已开始并保存到本机");
+  };
+
+  const openEightSetup = () => {
+    if (data.activeMatch || data.activeEightBallMatch) { setStatus("请先结束或保存当前对局，再创建中八比赛"); navigate("/"); return; }
+    setEightSetupOpen(true);
+  };
+
   const openSetup = (mode: MatchMode) => {
+    if (data.activeEightBallMatch) { setStatus("请先结束当前中八比赛，再创建其他对局"); navigate("/"); return; }
     if (data.activeMatch) {
       setPendingMode(mode);
       setDiscardArmed(false);
@@ -722,15 +864,19 @@ export default function GameApp() {
   };
 
   const page = (() => {
-    if (path === "/") return data.activeMatch
-      ? <ActiveMatchView match={data.activeMatch} onChange={updateActive} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
-      : <EmptyHome onStart={openSetup} onNavigate={navigate} onResume={resumePaused} recent={data.history[0]} paused={data.pausedMatches} />;
-    if (path === "/play") return <PlayPage onStart={openSetup} />;
+    if (path === "/") return data.activeEightBallMatch
+      ? <EightBallBoard match={data.activeEightBallMatch} onChange={updateEight} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
+      : data.activeMatch
+        ? <ActiveMatchView match={data.activeMatch} onChange={updateActive} onFinish={() => setConfirmEnd(true)} toast={setStatus} />
+        : <EmptyHome onStart={openSetup} onStartEight={openEightSetup} onNavigate={navigate} onResume={resumePaused} recent={data.history[0]} paused={data.pausedMatches} />;
+    if (path === "/play") return <PlayPage onStart={openSetup} onStartEight={openEightSetup} />;
     if (path === "/decks") return <DecksPage />;
     if (path.startsWith("/history")) {
       const selectedId = path.split("/")[2];
       const selectedMatch = data.history.find((match) => match.id === selectedId);
-      return <><UnifiedHistoryPage history={data.history} selectedId={selectedId} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />{selectedMatch && selectedMatch.scoreEvents.length > 0 && <HistoryCorrectionDock match={selectedMatch} onChange={(updated) => setData({ ...data, history: data.history.map((match) => match.id === updated.id ? updated : match) })} />}</>;
+      const selectedEight = data.eightBallHistory.find((match) => match.id === selectedId);
+      if (selectedEight) return <EightBallHistoryDetail match={selectedEight} onBack={() => navigate("/history")} />;
+      return <><UnifiedHistoryPage history={data.history} eightBallHistory={data.eightBallHistory} selectedId={selectedId} onSelect={(id) => navigate(id ? `/history/${id}` : "/history")} />{selectedMatch && selectedMatch.scoreEvents.length > 0 && <HistoryCorrectionDock match={selectedMatch} onChange={(updated) => setData({ ...data, history: data.history.map((match) => match.id === updated.id ? updated : match) })} />}</>;
     }
     if (path === "/profile") return <ProfilePage history={data.history} />;
     return <div className="large-empty page-shell"><span>404</span><h2>页面不存在</h2><button className="primary" onClick={() => navigate("/")}>返回对局</button></div>;
@@ -740,10 +886,11 @@ export default function GameApp() {
 
   return (
     <main className="app-root">
-      <AppHeader path={path} active={!!data.activeMatch} onNavigate={navigate} />
+      <AppHeader path={path} active={!!data.activeMatch || !!data.activeEightBallMatch} onNavigate={navigate} />
       {page}
       {setupMode && <SetupDialog initialMode={setupMode} savedRules={data.savedRules} scorePresets={data.scorePresets} onClose={() => setSetupMode(null)} onStart={start} />}
-      {confirmEnd && <ConfirmDialog title="结束本场对局？" body="系统会保存最终排名、规则快照、计分流水和卡牌记录。结束后本场默认只读。" onCancel={() => setConfirmEnd(false)} onConfirm={complete} />}
+      {eightSetupOpen && <EightBallSetupDialog defaultLayout={eightDefaultLayout} onClose={() => setEightSetupOpen(false)} onStart={startEight} />}
+      {confirmEnd && <ConfirmDialog title="结束本场对局？" body="系统会保存最终结果、完整流水和更正记录。结束后仍可导出战绩。" onCancel={() => setConfirmEnd(false)} onConfirm={data.activeEightBallMatch ? completeEight : complete} />}
       {pendingMode && data.activeMatch && <ActiveMatchProtectionDialog match={data.activeMatch} discardArmed={discardArmed} onContinue={continueActive} onSave={saveActiveAndCreate} onArmDiscard={() => setDiscardArmed(true)} onDiscard={abandonActiveAndCreate} />}
       {storageIssue && <StorageRecoveryDialog issue={storageIssue} onRetry={retryStorage} onReset={resetStorage} />}
       {status && <div className="status-toast" role="status"><span>✓</span>{status}</div>}
