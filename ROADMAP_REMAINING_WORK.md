@@ -565,7 +565,7 @@ R2.5 / v4.1.0 已发布，R3 本地数据迁移闭环已完成。2026-08-11 已�
 - 多设备同时修改同一场对局
 - 大型赛事管理和摄像头识别
 
-发布门槛已完成：真实邀请码生产账号灰度与生产备份恢复演练均已由产品负责人验收。`hei8-r3-production` 已独立配置 `REGISTRATION_INVITE_CODE`、`PASSWORD_HMAC_KEY`、`SESSION_HMAC_KEY`；Secret 不可读取，也不得写入仓库。
+发布门槛已完成：真实邀请码生产账号灰度与生产备份恢复演练均已由产品负责人验收。唯一正式 Worker `taiqiu-qizhao-cards` 已独立配置 `REGISTRATION_INVITE_CODE`、`PASSWORD_HMAC_KEY`、`SESSION_HMAC_KEY`；后续生产发布固定使用该名称。Secret 不可读取，也不得写入仓库。
 
 ---
 
