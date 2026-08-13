@@ -442,7 +442,11 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
     if (!name || name.length > 80) throw new BusinessValidationError("预设名称无效");
     statements.push(env.DB.prepare(
       `INSERT INTO score_presets (id, owner_user_id, name, rules_json, version, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)`,
+       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name, rules_json = excluded.rules_json,
+         version = score_presets.version + 1, updated_at = excluded.updated_at
+       WHERE score_presets.owner_user_id = excluded.owner_user_id`,
     ).bind(resourceId, session.user.id, name, JSON.stringify(snapshot.rules), now));
   } else if (kind === "deck") {
     const name = String(snapshot.name).trim();
@@ -451,11 +455,14 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
     statements.push(
       env.DB.prepare(
         `INSERT INTO decks (id, owner_user_id, name, visibility, current_version, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'private', 1, ?4, ?4)`,
+         VALUES (?1, ?2, ?3, 'private', 1, ?4, ?4)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
+         WHERE decks.owner_user_id = excluded.owner_user_id`,
       ).bind(resourceId, session.user.id, name, now),
       env.DB.prepare(
         `INSERT INTO deck_versions (id, deck_id, version_no, snapshot_json, checksum, created_by_user_id, created_at)
-         VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)`,
+         VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET snapshot_json = excluded.snapshot_json, checksum = excluded.checksum`,
       ).bind(versionId, resourceId, snapshotJson, checksum, session.user.id, now),
     );
   } else {
@@ -470,7 +477,21 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
       `INSERT INTO matches
         (id, owner_user_id, mode, status, privacy, version, write_lease_device_id, write_lease_expires_at,
          snapshot_json, snapshot_checksum, created_at, updated_at, started_at, ended_at)
-       VALUES (?1, ?2, ?3, ?4, 'private', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+       VALUES (?1, ?2, ?3, ?4, 'private', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+       ON CONFLICT(id) DO UPDATE SET
+         mode = excluded.mode,
+         status = excluded.status,
+         version = excluded.version,
+         write_lease_device_id = excluded.write_lease_device_id,
+         write_lease_expires_at = excluded.write_lease_expires_at,
+         snapshot_json = excluded.snapshot_json,
+         snapshot_checksum = excluded.snapshot_checksum,
+         updated_at = excluded.updated_at,
+         started_at = excluded.started_at,
+         ended_at = excluded.ended_at
+       WHERE matches.owner_user_id = excluded.owner_user_id
+         AND matches.status != 'completed'
+         AND (excluded.status = 'completed' OR excluded.version >= matches.version)`,
     ).bind(
       resourceId, session.user.id, String(snapshot.mode).slice(0, 40), status, version,
       status === "active" ? deviceId : null, status === "active" ? now + LEASE_DURATION_MS : null,
@@ -486,7 +507,8 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
       const playerId = await scopedUuid("hei8-r3-cloud-match-player", `${resourceId}:${seat}:${String((player as Record<string, unknown>).id ?? nickname)}`);
       statements.push(env.DB.prepare(
         `INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot, joined_at)
-         VALUES (?1, ?2, ?3, 'player', ?4, ?5)`,
+         VALUES (?1, ?2, ?3, 'player', ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET nickname_snapshot = excluded.nickname_snapshot`,
       ).bind(playerId, resourceId, seat, nickname, startedAt));
     }
   }

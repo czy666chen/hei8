@@ -252,6 +252,12 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .cloud-matches > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }.cloud-matches h2 { margin: 0; }.cloud-matches article { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 0; border-top: 1px solid var(--line); }.cloud-matches article > div { display: flex; gap: 8px; }.cloud-matches article > div:first-child { display: grid; }.cloud-matches article small, .empty-copy { color: var(--muted); }
 .sync-label.local { color: var(--muted); }.sync-label.pending, .sync-label.syncing { color: var(--gold); }.sync-label.synced { color: var(--mint); }.sync-label.failed { color: var(--red); }.sync-label.readonly { color: var(--cyan); }.settings-action { justify-content: flex-end !important; }
 .readonly-banner { display: flex; gap: 12px; align-items: center; margin: 18px auto; max-width: 1180px; padding: 14px 18px; border: 1px solid #57d5d777; border-radius: 10px; background: #102426; color: var(--text); }.readonly-banner b { color: var(--cyan); white-space: nowrap; }.read-only-match .scoring-panel, .read-only-match .card-board, .read-only-match .player-manager, .read-only-match .match-dock, .read-only-match .eight-page { pointer-events: none; opacity: .7; }
+
+/* Product-specific overrides: two-option account switch and high-contrast Chinese-eight colors. */
+.account-mode-switch { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.quick-icon.red { color: #fff; background: #f04452; }
+.eight-scoreboard article.red { background: #e33445; }
+.eight-scoreboard article.blue { background: #1677e8; }
 .account-data-panel h2 { margin: 0 0 14px; }.account-data-panel details { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }.account-data-panel summary { cursor: pointer; color: var(--red); font-weight: 800; }.account-data-panel details p { max-width: 680px; color: var(--muted); font-size: 11px; line-height: 1.7; }.account-data-panel label { display: grid; max-width: 460px; gap: 6px; margin: 10px 0; color: var(--muted); font-size: 10px; }.account-data-panel input { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--panel-2); }
 
 @media (max-width: 680px) {

@@ -52,7 +52,8 @@ export function enqueueMigrationResources(
   const existing = new Set(queue.value.items.map((item) => item.operationId));
   const additions = migration.resources.filter((resource) => {
     if (existing.has(resource.operationId)) return false;
-    return !links.value.links[`${resource.kind}:${resource.localId}`];
+    const link = links.value.links[`${resource.kind}:${resource.localId}`];
+    return !link || link.operationId !== resource.operationId;
   }).map((resource) => ({
     operationId: resource.operationId,
     batchId: migration.backup.checksum,

@@ -201,6 +201,37 @@ describe("R3 business authorization and cloud APIs", () => {
     expect(restored.players.map((player) => player.nickname_snapshot)).toEqual(["红方", "蓝方"]);
   });
 
+  it("propagates completion to another device and never lets a stale active snapshot reopen it", async () => {
+    const account = await register("two_device_sync");
+    const sourceDevice = await device(account, "finisher-device");
+    const readerDevice = await device(account, "reader-device");
+    const localId = "shared-eight-match";
+    const resourceId = "55555555-5555-5555-8555-555555555555";
+    const sendSnapshot = async (deviceId: string, operationId: string, snapshot: Record<string, unknown>) => {
+      const snapshotJson = JSON.stringify(snapshot);
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(snapshotJson));
+      const checksum = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      return write("/api/migrations/local", account.cookie, {
+        batchId: checksum,
+        deviceId,
+        item: { kind: "match", localId, resourceId, operationId, snapshotJson, checksum },
+      });
+    };
+    const base = {
+      id: localId, schemaVersion: 1, mode: "chinese_eight", createdAt: 100, startedAt: 110,
+      players: [{ id: "red", name: "红方" }, { id: "blue", name: "蓝方" }], events: [],
+    };
+    expect((await sendSnapshot(sourceDevice, "66666666-6666-5666-8666-666666666661", { ...base, matchVersion: 1, status: "active" })).status).toBe(201);
+    expect((await sendSnapshot(sourceDevice, "66666666-6666-5666-8666-666666666662", { ...base, matchVersion: 2, status: "completed", endedAt: 500 })).status).toBe(201);
+    expect((await sendSnapshot(readerDevice, "66666666-6666-5666-8666-666666666663", { ...base, matchVersion: 1, status: "active" })).status).toBe(201);
+
+    const history = await (await api("/api/history", account.cookie)).json() as { matches: { id: string; status: string }[] };
+    const row = history.matches.find((match) => match.status === "completed");
+    expect(row).toBeTruthy();
+    const detail = await (await api(`/api/matches/${row!.id}`, account.cookie)).json() as { match: { snapshot_json: string } };
+    expect(JSON.parse(detail.match.snapshot_json)).toMatchObject({ status: "completed", endedAt: 500, matchVersion: 2 });
+  });
+
   it("allows a participant to read a match but only the leased owner device to write", async () => {
     const a = await register("account_a");
     const b = await register("account_b");

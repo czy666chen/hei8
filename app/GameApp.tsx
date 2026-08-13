@@ -84,8 +84,9 @@ import {
   retrySyncQueue,
   syncQueueSummary,
 } from "../src/lib/cloud-sync";
+import { reconcileCloudMatches, type CloudMatchSnapshot } from "../src/lib/cloud-reconcile";
 
-const APP_VERSION = "5.0.0-rc.1";
+const APP_VERSION = "5.0.0";
 
 const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
 
@@ -702,7 +703,7 @@ function AccountForm({ onAuthenticated }: { onAuthenticated: (user: AuthUser) =>
     } catch (error) { setMessage(error instanceof Error ? error.message : "账号操作失败"); }
     finally { setBusy(false); }
   };
-  return <section className="account-panel"><div className="segmented"><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>邀请码注册</button></div><form onSubmit={(event) => { event.preventDefault(); void submit(); }}><label>用户名<input autoComplete="username" minLength={3} maxLength={24} required value={username} onChange={(event) => setUsername(event.target.value)} /></label>{mode === "register" && <label>昵称<input autoComplete="nickname" maxLength={40} value={nickname} onChange={(event) => setNickname(event.target.value)} /></label>}<label>密码<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={6} maxLength={128} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>{mode === "register" && <label>固定邀请码<input type="password" autoComplete="off" required value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} /></label>}<button className="primary" disabled={busy}>{busy ? "正在连接…" : mode === "login" ? "登录并恢复同步" : "创建账号"}</button></form>{message && <p className="form-message" role="alert">{message}</p>}<small>未登录时仍可继续使用全部本地单机功能；账号 Cookie 为 HttpOnly，不会把长期令牌写入 localStorage。</small></section>;
+  return <section className="account-panel"><div className="segmented account-mode-switch"><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>邀请码注册</button></div><form onSubmit={(event) => { event.preventDefault(); void submit(); }}><label>用户名<input autoComplete="username" minLength={3} maxLength={24} required value={username} onChange={(event) => setUsername(event.target.value)} /></label>{mode === "register" && <label>昵称<input autoComplete="nickname" maxLength={40} value={nickname} onChange={(event) => setNickname(event.target.value)} /></label>}<label>密码<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={6} maxLength={128} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>{mode === "register" && <label>固定邀请码<input type="password" autoComplete="off" required value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} /></label>}<button className="primary" disabled={busy}>{busy ? "正在连接…" : mode === "login" ? "登录并恢复同步" : "创建账号"}</button></form>{message && <p className="form-message" role="alert">{message}</p>}</section>;
 }
 
 type CloudMatchRow = { id: string; mode: string; status: string; version: number; created_at: number; ended_at: number | null };
@@ -866,9 +867,10 @@ export default function GameApp() {
       if (manual) retrySyncQueue(store);
       enqueueMigrationResources(store, await prepareLocalMigration(store));
       let summary = syncQueueSummary(store);
-      if (!summary.total) { setSync({ state: "synced", pending: 0, message: "本机与云端已确认一致" }); return; }
       if (!navigator.onLine) { setSync({ state: "pending", pending: summary.total, message: "当前离线，将在恢复联网后自动补传" }); return; }
-      const result = await flushSyncQueue(store, { deviceId: await ensureDevice() });
+      const result = summary.total
+        ? await flushSyncQueue(store, { deviceId: await ensureDevice() })
+        : { accepted: 0, duplicate: 0, failed: 0, conflict: 0, authRequired: false, remaining: 0 };
       summary = syncQueueSummary(store);
       if (result.authRequired) {
         setUser(null);
@@ -876,6 +878,14 @@ export default function GameApp() {
       } else if (result.conflict || result.failed) {
         setSync({ state: "failed", pending: summary.total, message: result.conflict ? "云端版本冲突，已停止补传且保留本机队列" : "补传失败，已保留队列并等待重试" });
       } else {
+        const rows = (await apiPayload<{ matches: CloudMatchRow[] }>(await fetch("/api/history"))).matches;
+        const snapshots = (await Promise.all(rows.map(async (row) => {
+          try {
+            const detail = await apiPayload<{ match: { snapshot_json: string } }>(await fetch(`/api/matches/${row.id}`));
+            return JSON.parse(detail.match.snapshot_json) as CloudMatchSnapshot;
+          } catch { return null; }
+        }))).filter((match): match is CloudMatchSnapshot => match !== null);
+        setData((current) => reconcileCloudMatches(current, snapshots));
         setSync({ state: summary.total ? "pending" : "synced", pending: summary.total, message: summary.total ? "仍有项目等待补传" : "本机与云端已确认一致" });
       }
     } catch (error) {

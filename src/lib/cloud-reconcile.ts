@@ -1,0 +1,38 @@
+import { isEightBallMatch, type EightBallMatch } from "./eight-ball";
+import { isStoredMatch, type BilliardsMatch } from "./match";
+import type { AppData } from "./local-storage";
+
+export type CloudMatchSnapshot = BilliardsMatch | EightBallMatch;
+
+export function reconcileCloudMatches(data: AppData, snapshots: CloudMatchSnapshot[]): AppData {
+  let next = data;
+  for (const snapshot of snapshots) {
+    if (isEightBallMatch(snapshot)) {
+      const localActive = next.activeEightBallMatch?.id === snapshot.id ? next.activeEightBallMatch : null;
+      if (snapshot.status === "completed") {
+        const existing = next.eightBallHistory.find((item) => item.id === snapshot.id);
+        if (!localActive && existing && JSON.stringify(existing) === JSON.stringify(snapshot)) continue;
+        next = {
+          ...next,
+          activeEightBallMatch: localActive ? null : next.activeEightBallMatch,
+          eightBallHistory: [snapshot, ...next.eightBallHistory.filter((item) => item.id !== snapshot.id)],
+        };
+      } else if (localActive && snapshot.matchVersion > localActive.matchVersion) {
+        next = { ...next, activeEightBallMatch: snapshot };
+      }
+      continue;
+    }
+    if (!isStoredMatch(snapshot)) continue;
+    const localActive = next.activeMatch?.id === snapshot.id;
+    if (snapshot.status === "completed") {
+      const existing = next.history.find((item) => item.id === snapshot.id);
+      if (!localActive && existing && JSON.stringify(existing) === JSON.stringify(snapshot)) continue;
+      next = {
+        ...next,
+        activeMatch: localActive ? null : next.activeMatch,
+        history: [snapshot, ...next.history.filter((item) => item.id !== snapshot.id)],
+      };
+    }
+  }
+  return next;
+}
