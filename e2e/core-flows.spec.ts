@@ -34,6 +34,31 @@ test.describe("追分核心流程", () => {
   });
 });
 
+test("R2.5 中八建局、逐局录入、布局切换、恢复与战绩导出", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /开始中八比赛/ }).click();
+  await page.getByLabel("中八玩家 1 姓名").fill("阿杰");
+  await page.getByLabel("中八玩家 2 姓名").fill("老王");
+  await page.getByRole("button", { name: /确认并开始/ }).click();
+  await expect(page.locator(".eight-scoreboard")).toHaveClass(/stacked/);
+  await page.getByRole("button", { name: "阿杰 获胜" }).click();
+  await page.getByRole("button", { name: "炸清" }).click();
+  await page.getByText("老王 本局犯规").locator("..").getByRole("spinbutton").fill("2");
+  await page.getByRole("button", { name: /确认本局并进入下一局/ }).click();
+  await expect(page.locator(".eight-scoreboard article.red > strong")).toHaveText("1");
+  await expect(page.locator(".eight-ledger article")).toHaveCount(1);
+  await page.getByRole("button", { name: "切换左右" }).click();
+  await expect(page.locator(".eight-scoreboard")).toHaveClass(/split/);
+  await page.reload();
+  await expect(page.locator(".eight-scoreboard")).toHaveClass(/split/);
+  await expect(page.locator(".eight-scoreboard article.red > strong")).toHaveText("1");
+  await page.getByRole("button", { name: "结束比赛" }).click();
+  await page.getByRole("button", { name: "确认结束并保存" }).click();
+  await expect(page.getByRole("button", { name: "战绩长图" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打印 / PDF" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "JSON 备份" })).toBeVisible();
+});
+
 test("奇招牌抽取、使用、安全跳过和刷新恢复", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "开始奇招牌局" }).click();

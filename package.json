@@ -1,6 +1,6 @@
 {
   "name": "site-creator-vinext-starter",
-  "version": "4.0.1",
+  "version": "5.0.0-rc.1",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -12,9 +12,17 @@
     "build:static": "vite build --config vite.static.config.ts",
     "start": "vinext start",
     "test": "vitest run --config vitest.config.ts",
+    "test:worker": "cross-env WRANGLER_WRITE_LOGS=false WRANGLER_LOG_PATH=.wrangler/logs XDG_CONFIG_HOME=.wrangler/xdg vitest run --config vitest.worker.config.ts",
+    "test:all": "npm run test && npm run test:worker",
     "test:e2e": "playwright test",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .wrangler --ignore-pattern worker-configuration.d.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --env local",
+    "db:migrate:preview": "wrangler d1 migrations apply hei8-r3-preview --remote --env preview",
+    "db:migrate:production": "wrangler d1 migrations apply hei8-r3-production --remote --env production",
+    "db:check:local": "wrangler d1 execute DB --local --env local --command \"PRAGMA foreign_key_check; PRAGMA quick_check;\"",
+    "security:scan": "node scripts/scan-secrets.mjs",
+    "auth:reset-password": "node scripts/reset-password.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
@@ -23,7 +31,8 @@
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/vite-plugin": "^1.51.2",
+    "@cloudflare/vitest-pool-workers": "^0.21.0",
     "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
@@ -31,6 +40,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
+    "cross-env": "^10.1.0",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
@@ -39,8 +49,8 @@
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.0.13",
-    "vitest": "3.2.4",
-    "wrangler": "4.92.0"
+    "vitest": "^4.1.0",
+    "wrangler": "^4.120.1"
   },
   "type": "module"
 }

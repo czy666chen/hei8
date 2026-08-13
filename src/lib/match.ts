@@ -128,6 +128,10 @@ export interface MatchDraft {
   deckId?: OfficialDeckId;
   playerInitialScores?: number[];
   turnStrategy?: TurnStrategy;
+  cardAutoDrawPolicy?: AutoDrawPolicy;
+  cardHandLimit?: number;
+  cardExhaustionPolicy?: DeckExhaustionPolicy;
+  cardFilter?: Partial<MatchCardFilter>;
 }
 
 export const DEFAULT_RULES: ScoreRule[] = [

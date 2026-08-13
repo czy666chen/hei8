@@ -1,0 +1,75 @@
+import { createHmac, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
+import { Writable } from "node:stream";
+
+const RESERVED = new Set(["admin", "administrator", "root", "system", "support", "staff", "moderator", "api"]);
+const args = process.argv.slice(2);
+const environment = args.includes("--env") ? args[args.indexOf("--env") + 1] : "";
+const username = args.find((arg, index) => index !== args.indexOf("--env") + 1 && !arg.startsWith("--"))?.trim().toLowerCase() ?? "";
+
+if (!['preview', 'production'].includes(environment) || !/^[a-z0-9_]{4,24}$/.test(username) || RESERVED.has(username)) {
+  console.error("Usage: npm run auth:reset-password -- <username> --env preview|production");
+  process.exit(2);
+}
+
+function readHidden(prompt) {
+  if (!process.stdin.isTTY) throw new Error("This command requires an interactive terminal");
+  process.stdout.write(prompt);
+  const hiddenOutput = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  const reader = createInterface({ input: process.stdin, output: hiddenOutput, terminal: true });
+  return new Promise((resolve) => {
+    reader.question("", (answer) => {
+      reader.close();
+      process.stdout.write("\n");
+      resolve(answer);
+    });
+  });
+}
+
+function runWrangler(database, sql) {
+  const executable = process.platform === "win32" ? "npx.cmd" : "npx";
+  const result = spawnSync(
+    executable,
+    ["wrangler", "d1", "execute", database, "--remote", "--env", environment, "--json", "--command", sql],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        WRANGLER_WRITE_LOGS: "false",
+        WRANGLER_LOG_PATH: ".wrangler/logs",
+      },
+    },
+  );
+  if (result.status !== 0) throw new Error(result.stderr.trim() || "Wrangler command failed");
+  return JSON.parse(result.stdout);
+}
+
+const password = await readHidden("New password (6-64 characters): ");
+if (typeof password !== "string" || password.length < 6 || password.length > 64) {
+  throw new Error("Password must contain 6 to 64 characters");
+}
+const hmacKey = await readHidden("PASSWORD_HMAC_KEY: ");
+if (typeof hmacKey !== "string" || hmacKey.length < 16) throw new Error("PASSWORD_HMAC_KEY is too short");
+
+const database = environment === "preview" ? "hei8-r3-preview" : "hei8-r3-production";
+const lookup = runWrangler(database, `SELECT id FROM users WHERE normalized_username = '${username}'`);
+const userId = lookup?.[0]?.results?.[0]?.id;
+if (typeof userId !== "string") throw new Error("User not found");
+
+const digest = createHmac("sha256", hmacKey)
+  .update(`password-v1\0${username}\0${password}`)
+  .digest("hex");
+const now = Date.now();
+const auditId = randomUUID();
+const requestId = `admin-cli:${randomUUID()}`;
+runWrangler(
+  database,
+  `UPDATE users SET password_digest = '${digest}', password_version = 1, updated_at = ${now} WHERE id = '${userId}';
+   DELETE FROM sessions WHERE user_id = '${userId}';
+   INSERT INTO auth_audit_events (id, user_id, action, outcome, request_id, metadata_json, created_at)
+   VALUES ('${auditId}', '${userId}', 'admin_reset_password', 'success', '${requestId}', '{}', ${now});`,
+);
+
+console.log(`Password reset completed for ${username} in ${environment}; all previous sessions were revoked.`);

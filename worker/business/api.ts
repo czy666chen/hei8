@@ -1,0 +1,555 @@
+import type { AuthEnv } from "../auth/api";
+import { requireMatchRead, requireMatchWriteLease, requireSession } from "./authorization";
+
+const MAX_JSON_BYTES = 64 * 1024;
+const LEASE_DURATION_MS = 15 * 60 * 1000;
+
+class BusinessValidationError extends Error {}
+
+function json(data: unknown, status = 200, extraHeaders?: HeadersInit): Response {
+  const headers = new Headers({
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+  });
+  if (extraHeaders) new Headers(extraHeaders).forEach((value, key) => headers.append(key, value));
+  return new Response(JSON.stringify(data), { status, headers });
+}
+
+function requireSameOrigin(request: Request): void {
+  const origin = request.headers.get("Origin");
+  if (!origin || origin !== new URL(request.url).origin) {
+    throw new BusinessValidationError("请求来源无效");
+  }
+}
+
+async function readJson(request: Request, maxBytes = MAX_JSON_BYTES): Promise<Record<string, unknown>> {
+  if (request.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    throw new BusinessValidationError("请求必须使用 application/json");
+  }
+  const declared = Number(request.headers.get("Content-Length") ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) throw new BusinessValidationError("请求体过大");
+  if (!request.body) throw new BusinessValidationError("请求体不能为空");
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new BusinessValidationError("请求体过大");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");
+    return value as Record<string, unknown>;
+  } catch {
+    throw new BusinessValidationError("请求体不是有效 JSON 对象");
+  }
+}
+
+function stringField(body: Record<string, unknown>, name: string, maxLength = 128): string {
+  const value = body[name];
+  if (typeof value !== "string" || value.length < 1 || value.length > maxLength) {
+    throw new BusinessValidationError(`${name} 无效`);
+  }
+  return value;
+}
+
+function integerField(body: Record<string, unknown>, name: string): number {
+  const value = body[name];
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new BusinessValidationError(`${name} 无效`);
+  }
+  return value;
+}
+
+function objectField(body: Record<string, unknown>, name: string): Record<string, unknown> {
+  const value = body[name];
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new BusinessValidationError(`${name} 无效`);
+  return value as Record<string, unknown>;
+}
+
+function uuidField(body: Record<string, unknown>, name: string): string {
+  const value = stringField(body, name, 36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new BusinessValidationError(`${name} 无效`);
+  }
+  return value;
+}
+
+function hexDigestField(body: Record<string, unknown>, name: string): string {
+  const value = stringField(body, name, 64).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new BusinessValidationError(`${name} 无效`);
+  return value;
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function scopedUuid(namespace: string, value: string): Promise<string> {
+  const hex = await sha256(`${namespace}\u0000${value}`);
+  const bytes = Uint8Array.from(hex.slice(0, 32).match(/.{2}/g) ?? [], (pair) => Number.parseInt(pair, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const id = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
+}
+
+async function registerDevice(request: Request, env: AuthEnv): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const deviceKey = stringField(body, "deviceKey", 128);
+  const name = stringField(body, "name", 80);
+  const now = Date.now();
+  const existing = await env.DB.prepare(
+    "SELECT id FROM devices WHERE user_id = ?1 AND device_key = ?2 AND revoked_at IS NULL",
+  ).bind(session.user.id, deviceKey).first<string>("id");
+  const id = existing ?? crypto.randomUUID();
+  if (existing) {
+    await env.DB.prepare("UPDATE devices SET name = ?1, last_seen_at = ?2 WHERE id = ?3 AND user_id = ?4")
+      .bind(name, now, id, session.user.id).run();
+  } else {
+    await env.DB.prepare(
+      "INSERT INTO devices (id, user_id, device_key, name, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+    ).bind(id, session.user.id, deviceKey, name, now).run();
+  }
+  return json({ device: { id, deviceKey, name } }, existing ? 200 : 201);
+}
+
+async function listHistory(request: Request, env: AuthEnv): Promise<Response> {
+  const session = await requireSession(env, request);
+  const result = await env.DB.prepare(
+    `SELECT id, mode, status, version, created_at, ended_at FROM matches WHERE owner_user_id = ?1
+     UNION
+     SELECT m.id, m.mode, m.status, m.version, m.created_at, m.ended_at
+       FROM match_players mp INDEXED BY match_players_user_match_idx
+       JOIN matches m ON m.id = mp.match_id
+      WHERE mp.user_id = ?1 AND mp.left_at IS NULL
+     ORDER BY ended_at DESC, created_at DESC LIMIT 100`,
+  ).bind(session.user.id).all();
+  return json({ matches: result.results });
+}
+
+async function listContacts(request: Request, env: AuthEnv): Promise<Response> {
+  const session = await requireSession(env, request);
+  const result = await env.DB.prepare(
+    `SELECT pc.contact_user_id AS user_id, pc.status, pc.source, pc.last_played_at,
+            p.public_code, p.nickname, p.avatar_url
+       FROM player_contacts pc INDEXED BY player_contacts_owner_last_played_idx
+       JOIN profiles p ON p.user_id = pc.contact_user_id
+      WHERE pc.owner_user_id = ?1
+      ORDER BY pc.last_played_at DESC LIMIT 100`,
+  ).bind(session.user.id).all();
+  return json({ contacts: result.results });
+}
+
+async function listOwned(request: Request, env: AuthEnv, resource: "presets" | "decks"): Promise<Response> {
+  const session = await requireSession(env, request);
+  const sql = resource === "presets"
+    ? "SELECT id, name, rules_json, version, updated_at FROM score_presets WHERE owner_user_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC"
+    : "SELECT id, name, visibility, current_version, updated_at FROM decks WHERE owner_user_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC";
+  const result = await env.DB.prepare(sql).bind(session.user.id).all();
+  return json({ [resource]: result.results });
+}
+
+async function getOwned(request: Request, env: AuthEnv, resource: "presets" | "decks", id: string): Promise<Response> {
+  const session = await requireSession(env, request);
+  const sql = resource === "presets"
+    ? "SELECT id, name, rules_json, version, updated_at FROM score_presets WHERE id = ?1 AND owner_user_id = ?2 AND deleted_at IS NULL"
+    : "SELECT id, name, visibility, current_version, updated_at FROM decks WHERE id = ?1 AND owner_user_id = ?2 AND deleted_at IS NULL";
+  const row = await env.DB.prepare(sql).bind(id, session.user.id).first();
+  return row ? json({ [resource.slice(0, -1)]: row }) : json({ error: "资源不存在" }, 404);
+}
+
+type Receipt = { resource_type: string; response_json: string };
+
+async function findReceipt(env: AuthEnv, userId: string, operationId: string): Promise<Receipt | null> {
+  return env.DB.prepare(
+    "SELECT resource_type, response_json FROM sync_receipts WHERE user_id = ?1 AND operation_id = ?2",
+  ).bind(userId, operationId).first<Receipt>();
+}
+
+function duplicateResponse(receipt: Receipt | null, resourceType: string): Response | null {
+  if (!receipt) return null;
+  if (receipt.resource_type !== resourceType) return json({ error: "operationId 已被其他操作使用" }, 409);
+  return json(JSON.parse(receipt.response_json));
+}
+
+async function createMatch(request: Request, env: AuthEnv): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const operationId = stringField(body, "operationId", 128);
+  const deviceId = stringField(body, "deviceId", 36);
+  const mode = stringField(body, "mode", 40);
+  const duplicate = duplicateResponse(await findReceipt(env, session.user.id, operationId), "match");
+  if (duplicate) return duplicate;
+
+  const ownsDevice = await env.DB.prepare(
+    "SELECT 1 AS owned FROM devices WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+  ).bind(deviceId, session.user.id).first<number>("owned");
+  if (!ownsDevice) return json({ error: "设备不存在" }, 404);
+
+  const matchId = crypto.randomUUID();
+  const now = Date.now();
+  const response = { match: { id: matchId, mode, status: "draft", version: 0, writeLeaseDeviceId: deviceId } };
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO matches
+          (id, owner_user_id, mode, status, privacy, version, write_lease_device_id, write_lease_expires_at)
+         VALUES (?1, ?2, ?3, 'draft', 'private', 0, ?4, ?5)`,
+      ).bind(matchId, session.user.id, mode, deviceId, now + LEASE_DURATION_MS),
+      env.DB.prepare(
+        `INSERT INTO sync_receipts
+          (id, user_id, device_id, operation_id, resource_type, resource_id, result, response_json)
+         VALUES (?1, ?2, ?3, ?4, 'match', ?5, 'accepted', ?6)`,
+      ).bind(crypto.randomUUID(), session.user.id, deviceId, operationId, matchId, JSON.stringify(response)),
+    ]);
+  } catch (error) {
+    const raced = duplicateResponse(await findReceipt(env, session.user.id, operationId), "match");
+    if (raced) return raced;
+    throw error;
+  }
+  return json(response, 201);
+}
+
+async function getMatch(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
+  const session = await requireSession(env, request);
+  await requireMatchRead(env, session, matchId);
+  const [match, players, scores, cards] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT id, owner_user_id, mode, status, privacy, version, snapshot_json,
+              write_lease_device_id, write_lease_expires_at,
+              created_at, updated_at, started_at, ended_at
+         FROM matches WHERE id = ?1`,
+    ).bind(matchId),
+    env.DB.prepare(
+      "SELECT id, seat_no, user_id, role, nickname_snapshot, joined_at, left_at FROM match_players WHERE match_id = ?1 ORDER BY seat_no",
+    ).bind(matchId),
+    env.DB.prepare(
+      "SELECT id, operation_id, sequence_no, actor_user_id, player_id, score_delta, correction_event_id, payload_json, occurred_at FROM score_events WHERE match_id = ?1 ORDER BY sequence_no",
+    ).bind(matchId),
+    env.DB.prepare(
+      "SELECT id, operation_id, sequence_no, actor_user_id, card_instance_snapshot_json, score_event_id, occurred_at FROM card_events WHERE match_id = ?1 ORDER BY sequence_no",
+    ).bind(matchId),
+  ]);
+  return json({ match: match.results[0], players: players.results, scoreEvents: scores.results, cardEvents: cards.results });
+}
+
+async function takeOverMatch(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const operationId = uuidField(body, "operationId");
+  const deviceId = uuidField(body, "deviceId");
+  const expectedVersion = integerField(body, "expectedVersion");
+
+  const duplicate = duplicateResponse(await findReceipt(env, session.user.id, operationId), "lease_takeover");
+  if (duplicate) return duplicate;
+
+  const match = await requireMatchRead(env, session, matchId);
+  if (match.owner_user_id !== session.user.id) return json({ error: "无权接管此对局" }, 403);
+  if (match.status === "completed" || match.status === "cancelled") return json({ error: "对局已结束，不能接管" }, 409);
+  if (match.version !== expectedVersion) {
+    return json({ error: "版本冲突，请先恢复云端最新版本", currentVersion: match.version }, 409);
+  }
+  const ownsDevice = await env.DB.prepare(
+    "SELECT 1 AS owned FROM devices WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+  ).bind(deviceId, session.user.id).first<number>("owned");
+  if (!ownsDevice) return json({ error: "设备不存在" }, 404);
+
+  const now = Date.now();
+  if (match.write_lease_device_id && match.write_lease_device_id !== deviceId
+    && (match.write_lease_expires_at ?? 0) >= now) {
+    return json({
+      error: "另一台设备仍持有主写租约",
+      currentVersion: match.version,
+      leaseExpiresAt: match.write_lease_expires_at,
+    }, 409);
+  }
+
+  const leaseExpiresAt = now + LEASE_DURATION_MS;
+  const response = { matchId, deviceId, version: match.version, leaseExpiresAt };
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE matches
+            SET write_lease_device_id = ?1, write_lease_expires_at = ?2, updated_at = ?3
+          WHERE id = ?4 AND owner_user_id = ?5 AND version = ?6
+            AND status IN ('draft', 'active')
+            AND (write_lease_device_id IS NULL OR write_lease_device_id = ?1 OR write_lease_expires_at < ?3)`,
+      ).bind(deviceId, leaseExpiresAt, now, matchId, session.user.id, expectedVersion),
+      env.DB.prepare(
+        `INSERT INTO sync_receipts
+          (id, user_id, device_id, operation_id, resource_type, resource_id, result, response_json)
+         SELECT ?1, ?2, ?3, ?4, 'lease_takeover', ?5, 'accepted', ?6
+          WHERE EXISTS (
+            SELECT 1 FROM matches
+             WHERE id = ?5 AND owner_user_id = ?2 AND write_lease_device_id = ?3
+               AND write_lease_expires_at = ?7 AND version = ?8
+          )`,
+      ).bind(
+        crypto.randomUUID(), session.user.id, deviceId, operationId, matchId,
+        JSON.stringify(response), leaseExpiresAt, expectedVersion,
+      ),
+    ]);
+    if ((results[0].meta.changes ?? 0) !== 1 || (results[1].meta.changes ?? 0) !== 1) {
+      return json({ error: "接管条件已变化，请刷新后重试" }, 409);
+    }
+  } catch (error) {
+    const raced = duplicateResponse(await findReceipt(env, session.user.id, operationId), "lease_takeover");
+    if (raced) return raced;
+    throw error;
+  }
+  return json(response);
+}
+
+async function appendScoreEvent(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const operationId = stringField(body, "operationId", 128);
+  const deviceId = stringField(body, "deviceId", 36);
+  const playerId = stringField(body, "playerId", 36);
+  const expectedVersion = integerField(body, "expectedVersion");
+  const scoreDelta = integerField(body, "scoreDelta");
+  const occurredAt = body.occurredAt === undefined ? Date.now() : integerField(body, "occurredAt");
+
+  const duplicate = duplicateResponse(await findReceipt(env, session.user.id, operationId), "score_event");
+  if (duplicate) return duplicate;
+  await requireMatchWriteLease(env, session, matchId, deviceId);
+  const playerExists = await env.DB.prepare(
+    "SELECT 1 AS found FROM match_players WHERE id = ?1 AND match_id = ?2",
+  ).bind(playerId, matchId).first<number>("found");
+  if (!playerExists) return json({ error: "对局玩家不存在" }, 404);
+
+  const eventId = crypto.randomUUID();
+  const nextVersion = expectedVersion + 1;
+  const response = { event: { id: eventId, operationId, sequenceNo: nextVersion, playerId, scoreDelta }, version: nextVersion };
+  const now = Date.now();
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO score_events
+          (id, match_id, operation_id, sequence_no, actor_user_id, actor_device_id,
+           player_id, score_delta, payload_json, occurred_at)
+         SELECT ?1, m.id, ?2, ?3, ?4, ?5, ?6, ?7, '{}', ?8
+           FROM matches m
+          WHERE m.id = ?9 AND m.owner_user_id = ?4 AND m.version = ?10
+            AND m.write_lease_device_id = ?5 AND m.write_lease_expires_at >= ?11
+            AND m.status IN ('draft', 'active')`,
+      ).bind(eventId, operationId, nextVersion, session.user.id, deviceId, playerId, scoreDelta, occurredAt, matchId, expectedVersion, now),
+      env.DB.prepare(
+        `UPDATE matches SET version = ?1, updated_at = ?2
+          WHERE id = ?3 AND owner_user_id = ?4 AND version = ?5
+            AND EXISTS (SELECT 1 FROM score_events WHERE id = ?6 AND match_id = ?3)`,
+      ).bind(nextVersion, now, matchId, session.user.id, expectedVersion, eventId),
+      env.DB.prepare(
+        `INSERT INTO sync_receipts
+          (id, user_id, device_id, operation_id, resource_type, resource_id, result, response_json)
+         SELECT ?1, ?2, ?3, ?4, 'score_event', ?5, 'accepted', ?6
+          WHERE EXISTS (SELECT 1 FROM score_events WHERE id = ?5 AND match_id = ?7)`,
+      ).bind(crypto.randomUUID(), session.user.id, deviceId, operationId, eventId, JSON.stringify(response), matchId),
+    ]);
+    if ((results[0].meta.changes ?? 0) !== 1) return json({ error: "版本冲突，请刷新后重试" }, 409);
+  } catch (error) {
+    const raced = duplicateResponse(await findReceipt(env, session.user.id, operationId), "score_event");
+    if (raced) return raced;
+    throw error;
+  }
+  return json(response, 201);
+}
+
+type LocalMigrationKind = "preset" | "deck" | "match";
+
+function migrationSnapshot(kind: LocalMigrationKind, snapshotJson: string): Record<string, unknown> {
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(snapshotJson);
+  } catch {
+    throw new BusinessValidationError("snapshotJson 无效");
+  }
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new BusinessValidationError("snapshotJson 无效");
+  }
+  const value = snapshot as Record<string, unknown>;
+  if (kind === "preset" && (typeof value.name !== "string" || !Array.isArray(value.rules))) {
+    throw new BusinessValidationError("预设快照无效");
+  }
+  if (kind === "deck" && typeof value.name !== "string") throw new BusinessValidationError("牌组快照无效");
+  if (kind === "match" && (typeof value.id !== "string" || !Array.isArray(value.players) || typeof value.mode !== "string")) {
+    throw new BusinessValidationError("对局快照无效");
+  }
+  return value;
+}
+
+async function importLocalResource(request: Request, env: AuthEnv): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request, 512 * 1024);
+  hexDigestField(body, "batchId");
+  const deviceId = uuidField(body, "deviceId");
+  const item = objectField(body, "item");
+  const kindValue = stringField(item, "kind", 16);
+  if (kindValue !== "preset" && kindValue !== "deck" && kindValue !== "match") {
+    throw new BusinessValidationError("kind 无效");
+  }
+  const kind: LocalMigrationKind = kindValue;
+  const localId = stringField(item, "localId", 160);
+  const clientResourceId = uuidField(item, "resourceId");
+  const operationId = uuidField(item, "operationId");
+  const snapshotJson = stringField(item, "snapshotJson", 480 * 1024);
+  const checksum = hexDigestField(item, "checksum");
+  if (await sha256(snapshotJson) !== checksum) throw new BusinessValidationError("快照校验和不匹配");
+  const snapshot = migrationSnapshot(kind, snapshotJson);
+  const resourceType = `migration_${kind}`;
+
+  const existingReceipt = await findReceipt(env, session.user.id, operationId);
+  if (existingReceipt) {
+    if (existingReceipt.resource_type !== resourceType) return json({ error: "operationId 已被其他操作使用" }, 409);
+    const previous = JSON.parse(existingReceipt.response_json) as Record<string, unknown>;
+    return json({ ...previous, result: "duplicate" });
+  }
+
+  const ownsDevice = await env.DB.prepare(
+    "SELECT 1 AS owned FROM devices WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+  ).bind(deviceId, session.user.id).first<number>("owned");
+  if (!ownsDevice) return json({ error: "设备不存在" }, 404);
+
+  const resourceId = await scopedUuid(`hei8-r3-cloud-${kind}`, `${session.user.id}:${clientResourceId}`);
+  const response = { result: "accepted", kind, localId, clientResourceId, resourceId, checksum };
+  const statements: D1PreparedStatement[] = [];
+  const now = Date.now();
+
+  if (kind === "preset") {
+    const name = String(snapshot.name).trim();
+    if (!name || name.length > 80) throw new BusinessValidationError("预设名称无效");
+    statements.push(env.DB.prepare(
+      `INSERT INTO score_presets (id, owner_user_id, name, rules_json, version, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)`,
+    ).bind(resourceId, session.user.id, name, JSON.stringify(snapshot.rules), now));
+  } else if (kind === "deck") {
+    const name = String(snapshot.name).trim();
+    if (!name || name.length > 80) throw new BusinessValidationError("牌组名称无效");
+    const versionId = await scopedUuid("hei8-r3-cloud-deck-version", `${resourceId}:1`);
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO decks (id, owner_user_id, name, visibility, current_version, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'private', 1, ?4, ?4)`,
+      ).bind(resourceId, session.user.id, name, now),
+      env.DB.prepare(
+        `INSERT INTO deck_versions (id, deck_id, version_no, snapshot_json, checksum, created_by_user_id, created_at)
+         VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)`,
+      ).bind(versionId, resourceId, snapshotJson, checksum, session.user.id, now),
+    );
+  } else {
+    const players = snapshot.players as unknown[];
+    if (players.length < 1 || players.length > 8) throw new BusinessValidationError("对局玩家无效");
+    const status = snapshot.status === "completed" ? "completed" : "active";
+    const version = Number.isSafeInteger(snapshot.matchVersion) && Number(snapshot.matchVersion) >= 0 ? Number(snapshot.matchVersion) : 0;
+    const createdAt = Number.isSafeInteger(snapshot.createdAt) ? Number(snapshot.createdAt) : now;
+    const startedAt = Number.isSafeInteger(snapshot.startedAt) ? Number(snapshot.startedAt) : createdAt;
+    const endedAt = status === "completed" && Number.isSafeInteger(snapshot.endedAt) ? Number(snapshot.endedAt) : null;
+    statements.push(env.DB.prepare(
+      `INSERT INTO matches
+        (id, owner_user_id, mode, status, privacy, version, write_lease_device_id, write_lease_expires_at,
+         snapshot_json, snapshot_checksum, created_at, updated_at, started_at, ended_at)
+       VALUES (?1, ?2, ?3, ?4, 'private', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+    ).bind(
+      resourceId, session.user.id, String(snapshot.mode).slice(0, 40), status, version,
+      status === "active" ? deviceId : null, status === "active" ? now + LEASE_DURATION_MS : null,
+      snapshotJson, checksum, createdAt, now, startedAt, endedAt,
+    ));
+    for (let seat = 0; seat < players.length; seat += 1) {
+      const player = players[seat];
+      if (!player || typeof player !== "object" || typeof (player as Record<string, unknown>).name !== "string") {
+        throw new BusinessValidationError("对局玩家无效");
+      }
+      const nickname = String((player as Record<string, unknown>).name).trim();
+      if (!nickname || nickname.length > 80) throw new BusinessValidationError("对局玩家无效");
+      const playerId = await scopedUuid("hei8-r3-cloud-match-player", `${resourceId}:${seat}:${String((player as Record<string, unknown>).id ?? nickname)}`);
+      statements.push(env.DB.prepare(
+        `INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot, joined_at)
+         VALUES (?1, ?2, ?3, 'player', ?4, ?5)`,
+      ).bind(playerId, resourceId, seat, nickname, startedAt));
+    }
+  }
+
+  statements.push(env.DB.prepare(
+    `INSERT INTO sync_receipts
+      (id, user_id, device_id, operation_id, resource_type, resource_id, result, response_json)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'accepted', ?7)`,
+  ).bind(crypto.randomUUID(), session.user.id, deviceId, operationId, resourceType, resourceId, JSON.stringify(response)));
+
+  try {
+    await env.DB.batch(statements);
+  } catch (error) {
+    const raced = await findReceipt(env, session.user.id, operationId);
+    if (raced?.resource_type === resourceType) {
+      const previous = JSON.parse(raced.response_json) as Record<string, unknown>;
+      return json({ ...previous, result: "duplicate" });
+    }
+    throw error;
+  }
+  return json(response, 201);
+}
+
+async function listReceipts(request: Request, env: AuthEnv): Promise<Response> {
+  const session = await requireSession(env, request);
+  const after = Number(new URL(request.url).searchParams.get("after") ?? 0);
+  if (!Number.isSafeInteger(after) || after < 0) throw new BusinessValidationError("after 无效");
+  const result = await env.DB.prepare(
+    `SELECT operation_id, resource_type, resource_id, result, response_json, received_at
+       FROM sync_receipts
+      WHERE user_id = ?1 AND received_at > ?2
+      ORDER BY received_at LIMIT 200`,
+  ).bind(session.user.id, after).all();
+  return json({ receipts: result.results });
+}
+
+export async function handleBusinessApiRequest(request: Request, env: AuthEnv): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  try {
+    if (pathname === "/api/devices" && request.method === "POST") return await registerDevice(request, env);
+    if (pathname === "/api/history" && request.method === "GET") return await listHistory(request, env);
+    if (pathname === "/api/contacts" && request.method === "GET") return await listContacts(request, env);
+    if (pathname === "/api/presets" && request.method === "GET") return await listOwned(request, env, "presets");
+    if (pathname === "/api/decks" && request.method === "GET") return await listOwned(request, env, "decks");
+    if (pathname === "/api/matches" && request.method === "POST") return await createMatch(request, env);
+    if (pathname === "/api/migrations/local" && request.method === "POST") return await importLocalResource(request, env);
+    if (pathname === "/api/sync/receipts" && request.method === "GET") return await listReceipts(request, env);
+
+    const owned = pathname.match(/^\/api\/(presets|decks)\/([0-9a-f-]{36})$/);
+    if (owned && request.method === "GET") return await getOwned(request, env, owned[1] as "presets" | "decks", owned[2]);
+    const match = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})$/);
+    if (match && request.method === "GET") return await getMatch(request, env, match[1]);
+    const scoreEvent = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})\/score-events$/);
+    if (scoreEvent && request.method === "POST") return await appendScoreEvent(request, env, scoreEvent[1]);
+    const takeover = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})\/takeover$/);
+    if (takeover && request.method === "POST") return await takeOverMatch(request, env, takeover[1]);
+
+    if (pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);
+    return json({ error: "Not found" }, 404);
+  } catch (error) {
+    if (error instanceof Response) return error;
+    if (error instanceof BusinessValidationError) return json({ error: error.message }, 400);
+    console.error(JSON.stringify({ level: "error", event: "business_api_failure" }));
+    return json({ error: "服务器内部错误" }, 500);
+  }
+}
