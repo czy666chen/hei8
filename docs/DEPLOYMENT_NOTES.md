@@ -1,6 +1,6 @@
 # 部署注意事项（Cloudflare Workers + D1）
 
-> 本文档基于 2026-08-16 生产部署（`taiqiu-qizhao-cards`，v5.1.2 云端直创建 + 房主踢人）的实际操作整理。
+> 本文档基于 2026-08-16 生产部署（`taiqiu-qizhao-cards`，v5.1.2 云端直创建 + 房主踢人）的实际操作整理；最近一次部署为 2026-08-17 v5.2.0（实时房间全屏化、战绩删除、角色收敛，见第 9 节变更记录）。
 > 目标是让下一次部署（无论预览还是生产）可以按清单执行，并避开已踩过的坑。
 
 ## 1. 环境与资源现状
@@ -156,3 +156,11 @@ curl -i https://<worker>.<subdomain>.workers.dev/api/history
 - 生产部署 v5.1.2 特性（云端直创建房间、房主踢人/解除限制/移除临时选手）。
 - 生产 D1 由 `hei8-r3-production` 切换到 `hei8-r3-production-v2`（原因：0005 迁移在有数据旧库上受外键触发器阻塞；方案：新库全量迁移 + 重排数据导入，数据逐表验证一致）。
 - 删除预览 Worker `hei8-r3-preview`。
+
+### 变更记录（2026-08-17）
+
+- 生产部署 v5.2.0：实时房间全屏化（`/room`、`/room/:code`）、战绩删除（R5.2）、角色收敛（A5/A6）与 WebSocket 101 修复；提交 `1c3e3ec`、标签 `v5.2.0`。
+- 原地发布至既有 Worker `taiqiu-qizhao-cards`（Version `6050aae1-75bd-4310-b4a2-9c2c699afe8e`），未新建 Worker/Pages。
+- D1 无待应用迁移（`wrangler d1 migrations list` 显示 No migrations to apply），生产 secrets 未改动。
+- 部署后验证：`/api/health` 返回 `{"status":"ok","database":"ok"}`；首页 200；部署 bundle 含 `5.2.0` 与全屏房间路由、不含旧 `.realtime-room-panel`；无 Cookie 访问 `/api/history` 返回 401。
+- 待办：15 客户端容量与 D1/DO 用量验证（B4）、真人双设备实时回归。

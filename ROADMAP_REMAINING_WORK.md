@@ -1,8 +1,8 @@
 # 台球计分应用：后续总路线图
 
-更新时间：2026-08-16
+更新时间：2026-08-17
 
-当前状态：R4 / v5.1.0 已更新至既有生产 Worker；角色切换权限收敛、对局级成员投影与主“对局”层入口（A5/A6）及 WebSocket 101 连接回归已在本地实现并通过集成测试，剩余预览环境 15 客户端容量与用量观察
+当前状态：v5.2.0 已原地发布至生产 Worker `taiqiu-qizhao-cards`（2026-08-17）；包含角色收敛（A5/A6）、WebSocket 101 修复、战绩删除（R5.2）与实时房间全屏化，剩余预览环境 15 客户端容量与用量验证、真人双设备实时回归
 
 R3 技术决策基线：[docs/R3_TECHNICAL_DECISIONS.md](docs/R3_TECHNICAL_DECISIONS.md)
 
@@ -489,7 +489,7 @@ flowchart LR
 
 ### R4.9 当前实施进度（2026-08-16 更新，2026-08-17 补充实时房间全屏化）
 
-部署状态：预览 Worker `hei8-r3-preview` 已更新至版本 `14d7fb8c-b8d5-495a-8a0b-6e6849ef7abc`；既有生产 Worker `taiqiu-qizhao-cards` 已原地发布 `v5.1.0`（版本 `24bd46dd-2951-4126-8295-288d7ec8678e`），未创建新站点。预览与生产 D1 均已应用 `0004_shiny_quicksilver.sql`，迁移后 `foreign_key_check` 无异常、`quick_check` 为 `ok`。以下 2026-08-16 完成的角色收敛、对局级入口与 WebSocket 101 修复，以及 2026-08-17 完成的实时房间全屏化（纯前端呈现改造），均为本地工作区实现，尚未提交/部署至预览与生产；待本地预览冒烟与 15 客户端容量验证通过后再按 B1—B4 发布。
+部署状态：生产 Worker `taiqiu-qizhao-cards` 于 2026-08-17 原地发布 `v5.2.0`（Version `6050aae1-75bd-4310-b4a2-9c2c699afe8e`），未创建新 Worker/Pages；内容含角色收敛、对局级入口、WebSocket 101 修复、战绩删除（R5.2）与实时房间全屏化。预览 Worker `hei8-r3-preview` 已删除（2026-08-16），保持删除。生产 D1 `hei8-r3-production-v2` 无待应用迁移（`wrangler d1 migrations list` 显示 No migrations to apply），生产 secrets 未改动。剩余待办：预览环境 15 客户端容量与 D1/DO 用量验证（B4）、真人双设备实时回归。
 
 - [x] 增加一场对局一个 `MatchRoom` 的 SQLite-backed Durable Object 与三环境绑定
 - [x] 使用 WebSocket Hibernation API，连接身份通过 attachment 在休眠后恢复

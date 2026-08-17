@@ -2,7 +2,7 @@
 
 更新时间：2026-08-17
 
-当前状态：**核心改造已完成并通过验证**（阶段 1–3 已落地；阶段 4 的 tsc 类型检查、77 项单元测试、54 项 Worker 集成测试、30 项 Playwright e2e 全部通过，其中含本改造配套新增的 `e2e/room-fullscreen.spec.ts` 3 条用例 × 桌面/移动；等待真人登录态的实时对局手工回归与前端部署）
+当前状态：**核心改造已完成并通过验证**（阶段 1–3 已落地；阶段 4 的 tsc 类型检查、77 项单元测试、54 项 Worker 集成测试、30 项 Playwright e2e 全部通过，其中含本改造配套新增的 `e2e/room-fullscreen.spec.ts` 3 条用例 × 桌面/移动；**前端部署已完成**——随 v5.2.0 于 2026-08-17 原地发布至生产 Worker `taiqiu-qizhao-cards`（Version `6050aae1-75bd-4310-b4a2-9c2c699afe8e`）；等待真人登录态的实时对局手工回归）
 
 关联文档：[ROADMAP_REMAINING_WORK.md](../ROADMAP_REMAINING_WORK.md)（R4 / v5.1.0 多人实时房间已实现并部署，本文只描述前端呈现方式的改造，不涉及后端协议与 Durable Object 逻辑）
 
