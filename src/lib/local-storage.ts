@@ -10,6 +10,7 @@ export const EIGHT_BALL_LAYOUT_KEY = "billiards-eight-layout:v1";
 export const MIGRATION_LINKS_KEY = "billiards-cloud-links:v1";
 export const SYNC_DEVICE_KEY = "billiards-sync-device:v1";
 export const SYNC_QUEUE_KEY = "billiards-sync-queue:v1";
+export const DELETED_MATCHES_KEY = "billiards-deleted-matches:v1";
 
 export type ScorePreset = { id: string; name: string; rules: ScoreRule[] };
 
@@ -154,6 +155,40 @@ export const CLOUD_LINKS_CODEC: VersionedCodec<CloudLinks> = {
     return { version: 1, links: value.links };
   },
 };
+
+// Per-device tombstones of deleted match records. They survive refresh and
+// re-login and win over any older cloud snapshot during reconciliation, so a
+// deleted record can never be resurrected by sync.
+export type DeletedMatches = { version: 1; ids: string[] };
+
+export const DELETED_MATCHES_CODEC: VersionedCodec<DeletedMatches> = {
+  key: DELETED_MATCHES_KEY,
+  version: 1,
+  empty: { version: 1, ids: [] },
+  decode(raw) {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid deleted matches");
+    const value = parsed as Partial<DeletedMatches>;
+    if (value.version !== 1 || !Array.isArray(value.ids) || !value.ids.every((id) => typeof id === "string")) {
+      throw new Error("invalid deleted matches");
+    }
+    return { version: 1, ids: value.ids };
+  },
+};
+
+export function loadDeletedMatchIds(store: VersionedLocalStore): string[] {
+  const loaded = store.read(DELETED_MATCHES_CODEC);
+  return loaded.issue ? [] : loaded.value.ids;
+}
+
+export function addDeletedMatch(store: VersionedLocalStore, matchId: string): string[] {
+  const loaded = store.read(DELETED_MATCHES_CODEC);
+  const ids = loaded.issue ? [] : loaded.value.ids;
+  if (ids.includes(matchId)) return ids;
+  const next = [...ids, matchId];
+  store.write(DELETED_MATCHES_CODEC, { version: 1, ids: next });
+  return next;
+}
 
 function migrateLegacyCardMatch(state: GameState): BilliardsMatch {
   const now = Date.now();

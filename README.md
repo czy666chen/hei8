@@ -1,6 +1,6 @@
 # 台球奇招卡牌
 
-当前正式版本：`v5.0.0`，已完成账号、Cloudflare D1 与跨设备同步。
+当前正式版本：`v5.1.0`，已完成账号、跨设备同步及基于 Durable Objects/WebSocket 的多人实时房间。
 
 一个无需后端的台球卡牌抽取应用。整副牌包含 50 种规则、51 张实体卡，支持不放回随机抽取、手牌使用、已使用归档，并用 `localStorage` 自动保存本局进度。
 
@@ -24,6 +24,15 @@ npm run build:static
 ```
 
 `npm run build` 生成 Cloudflare Worker 版本，`npm run build:static` 生成适用于 Vercel 等静态托管平台的 `dist-static`。
+
+Cloudflare Vite 插件会在构建时固定目标环境，因此预览和生产发布必须使用对应脚本：
+
+```bash
+npm run deploy:preview
+npm run deploy:production
+```
+
+不要在普通 `npm run build` 之后使用 `wrangler deploy --env production`；生成的部署配置已经在构建阶段展开，事后追加 `--env` 不会把本地绑定切换为生产绑定。
 
 ## Vercel 部署
 

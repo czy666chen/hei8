@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { enqueueMigrationResources, flushSyncQueue, retrySyncQueue, SYNC_QUEUE_CODEC } from "./cloud-sync";
+import { enqueueMigrationResources, flushSyncQueue, removeQueuedMatchUploads, retrySyncQueue, SYNC_QUEUE_CODEC } from "./cloud-sync";
 import type { PreparedLocalMigration } from "./local-migration";
 import { CLOUD_LINKS_CODEC, MemoryStorageAdapter, VersionedLocalStore } from "./local-storage";
 
@@ -82,5 +82,17 @@ describe("persistent offline sync queue", () => {
     await expect(flushSyncQueue(store, { deviceId: crypto.randomUUID(), fetcher: auth, now: 300 }))
       .resolves.toMatchObject({ authRequired: true, remaining: 2 });
     expect(store.read(SYNC_QUEUE_CODEC).value.items[0].state).toBe("auth_required");
+  });
+
+  it("drops queued uploads of a deleted match so it can never be re-synced", () => {
+    const store = new VersionedLocalStore(new MemoryStorageAdapter());
+    enqueueMigrationResources(store, migration(), 100);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items).toHaveLength(2);
+
+    expect(removeQueuedMatchUploads(store, "a")).toBe(1);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items.map((item) => item.resource.localId)).toEqual(["b"]);
+    expect(removeQueuedMatchUploads(store, "a")).toBe(0);
+    expect(removeQueuedMatchUploads(store, "missing")).toBe(0);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items.map((item) => item.resource.localId)).toEqual(["b"]);
   });
 });

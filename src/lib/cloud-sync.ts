@@ -160,11 +160,23 @@ export function retrySyncQueue(store: VersionedLocalStore, now = Date.now()): vo
     version: 1,
     items: loaded.value.items.map((item) => ({
       ...item,
-      state: "pending",
+      state: "pending" as const,
       nextAttemptAt: now,
       error: undefined,
     })),
   });
+}
+
+export function removeQueuedMatchUploads(store: VersionedLocalStore, localId: string): number {
+  const loaded = store.read(SYNC_QUEUE_CODEC);
+  if (loaded.issue) return 0;
+  const remaining = loaded.value.items.filter(
+    (item) => !(item.resource.kind === "match" && item.resource.localId === localId),
+  );
+  if (remaining.length !== loaded.value.items.length) {
+    store.write(SYNC_QUEUE_CODEC, { version: 1, items: remaining });
+  }
+  return loaded.value.items.length - remaining.length;
 }
 
 export function syncQueueSummary(store: VersionedLocalStore): Record<SyncQueueState, number> & { total: number } {

@@ -4,9 +4,17 @@ import type { AppData } from "./local-storage";
 
 export type CloudMatchSnapshot = BilliardsMatch | EightBallMatch;
 
-export function reconcileCloudMatches(data: AppData, snapshots: CloudMatchSnapshot[]): AppData {
+export function reconcileCloudMatches(
+  data: AppData,
+  snapshots: CloudMatchSnapshot[],
+  deletedIds: Iterable<string> = [],
+): AppData {
+  const deleted = new Set(deletedIds);
   let next = data;
   for (const snapshot of snapshots) {
+    // A locally deleted record must win over any (older) cloud snapshot so
+    // sync can never resurrect it.
+    if (deleted.has(snapshot.id)) continue;
     if (isEightBallMatch(snapshot)) {
       const localActive = next.activeEightBallMatch?.id === snapshot.id ? next.activeEightBallMatch : null;
       if (snapshot.status === "completed") {

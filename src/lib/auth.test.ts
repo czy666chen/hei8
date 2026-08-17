@@ -16,7 +16,11 @@ describe("R3 authentication rules", () => {
     });
   });
 
-  it.each(["abc", "has-dash", "中文名", "admin", "ROOT", "support"])(
+  it("accepts a three-character username", () => {
+    expect(normalizeUsername("Ab_")).toEqual({ normalized: "ab_", display: "Ab_" });
+  });
+
+  it.each(["ab", "has-dash", "中文名", "admin", "ROOT", "support"])(
     "rejects the invalid or reserved username %s",
     (username) => {
       expect(() => normalizeUsername(username)).toThrow(AuthValidationError);

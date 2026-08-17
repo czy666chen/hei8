@@ -3,8 +3,11 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { handleApiRequest, type AuthEnv } from "./auth/api";
 import { handleBusinessApiRequest } from "./business/api";
+import { handleRealtimeApiRequest, type RealtimeEnv } from "./realtime/api";
 
-type WorkerEnv = AuthEnv & {
+export { MatchRoom } from "./realtime/match-room";
+
+type WorkerEnv = AuthEnv & RealtimeEnv & {
   ASSETS: Fetcher;
 };
 
@@ -33,6 +36,10 @@ const worker = {
 
     if (url.pathname.startsWith("/api/auth/") || url.pathname === "/api/profile" || url.pathname.startsWith("/api/account")) {
       return handleApiRequest(request, env);
+    }
+
+    if (url.pathname.startsWith("/api/realtime/")) {
+      return handleRealtimeApiRequest(request, env);
     }
 
     if (url.pathname.startsWith("/api/")) {

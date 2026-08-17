@@ -29,6 +29,34 @@
       "when": 1786443754028,
       "tag": "0003_peaceful_chamber",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786597453870,
+      "tag": "0004_shiny_quicksilver",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786605920934,
+      "tag": "0005_curly_ben_urich",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786700000000,
+      "tag": "0006_bumpy_shadow",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786883547233,
+      "tag": "0007_sour_patch",
+      "breakpoints": true
     }
   ]
 }

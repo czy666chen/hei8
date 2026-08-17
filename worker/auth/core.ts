@@ -29,7 +29,7 @@ export function normalizeUsername(input: unknown): { normalized: string; display
 
   const display = input.trim();
   const normalized = display.toLowerCase();
-  if (!/^[a-z0-9_]{4,24}$/.test(normalized) || RESERVED_USERNAMES.has(normalized)) {
+  if (!/^[a-z0-9_]{3,24}$/.test(normalized) || RESERVED_USERNAMES.has(normalized)) {
     throw new AuthValidationError("用户名格式无效", "username");
   }
 

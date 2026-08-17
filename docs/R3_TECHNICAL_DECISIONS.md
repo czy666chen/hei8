@@ -140,7 +140,7 @@ npx wrangler secret put REGISTRATION_INVITE_CODE
 ### 5.1 用户名
 
 - 规范化为小写后唯一，登录不区分大小写。
-- 长度 4–24 个字符。
+- 长度 3–24 个字符。
 - 只允许 ASCII 字母、数字和下划线。
 - 禁止 `admin`、`root`、`system`、`support` 等保留名称。
 - 用户名首版不可修改。

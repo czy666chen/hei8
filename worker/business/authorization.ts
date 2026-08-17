@@ -32,6 +32,10 @@ export async function requireMatchRead(
             SELECT 1 FROM match_players mp
              WHERE mp.match_id = m.id AND mp.user_id = ?2 AND mp.left_at IS NULL
           )
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM match_user_states mus
+           WHERE mus.match_id = m.id AND mus.user_id = ?2 AND mus.deleted_at IS NOT NULL
         )`,
   )
     .bind(matchId, session.user.id)

@@ -100,7 +100,7 @@ async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function scopedUuid(namespace: string, value: string): Promise<string> {
+export async function scopedUuid(namespace: string, value: string): Promise<string> {
   const hex = await sha256(`${namespace}\u0000${value}`);
   const bytes = Uint8Array.from(hex.slice(0, 32).match(/.{2}/g) ?? [], (pair) => Number.parseInt(pair, 16));
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
@@ -134,12 +134,21 @@ async function registerDevice(request: Request, env: AuthEnv): Promise<Response>
 async function listHistory(request: Request, env: AuthEnv): Promise<Response> {
   const session = await requireSession(env, request);
   const result = await env.DB.prepare(
-    `SELECT id, mode, status, version, created_at, ended_at FROM matches WHERE owner_user_id = ?1
+    `SELECT id, mode, status, version, created_at, ended_at FROM matches
+      WHERE owner_user_id = ?1
+        AND NOT EXISTS (
+          SELECT 1 FROM match_user_states mus
+           WHERE mus.match_id = matches.id AND mus.user_id = ?1 AND mus.deleted_at IS NOT NULL
+        )
      UNION
      SELECT m.id, m.mode, m.status, m.version, m.created_at, m.ended_at
        FROM match_players mp INDEXED BY match_players_user_match_idx
        JOIN matches m ON m.id = mp.match_id
-      WHERE mp.user_id = ?1 AND mp.left_at IS NULL
+      WHERE mp.user_id = ?1 AND mp.left_at IS NULL AND mp.role != 'spectator'
+        AND NOT EXISTS (
+          SELECT 1 FROM match_user_states mus
+           WHERE mus.match_id = m.id AND mus.user_id = ?1 AND mus.deleted_at IS NOT NULL
+        )
      ORDER BY ended_at DESC, created_at DESC LIMIT 100`,
   ).bind(session.user.id).all();
   return json({ matches: result.results });
@@ -250,6 +259,62 @@ async function getMatch(request: Request, env: AuthEnv, matchId: string): Promis
     ).bind(matchId),
   ]);
   return json({ match: match.results[0], players: players.results, scoreEvents: scores.results, cardEvents: cards.results });
+}
+
+async function deleteMatch(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const userId = session.user.id;
+
+  // Idempotent: an existing tombstone is a successful delete, even when the
+  // row was already physically removed by an earlier call.
+  const tombstoned = await env.DB.prepare(
+    "SELECT 1 AS deleted FROM match_user_states WHERE match_id = ?1 AND user_id = ?2 AND deleted_at IS NOT NULL",
+  ).bind(matchId, userId).first<number>("deleted");
+  if (tombstoned) return json({ deleted: true, matchId, alreadyDeleted: true });
+
+  const match = await requireMatchRead(env, session, matchId);
+  if (match.status === "draft" || match.status === "active") {
+    return json({ error: "进行中的对局不能删除，请先结束或取消" }, 409);
+  }
+  const liveRoom = await env.DB.prepare(
+    "SELECT 1 AS active_room FROM realtime_rooms WHERE match_id = ?1 AND status IN ('draft', 'active')",
+  ).bind(matchId).first<number>("active_room");
+  if (liveRoom) return json({ error: "实时房间仍在进行，请先结束对局" }, 409);
+
+  const participant = match.owner_user_id === userId || await env.DB.prepare(
+    "SELECT 1 AS participant FROM match_players WHERE match_id = ?1 AND user_id = ?2 AND left_at IS NULL AND role != 'spectator'",
+  ).bind(matchId, userId).first<number>("participant");
+  if (!participant) return json({ error: "无权删除此战绩" }, 403);
+
+  const now = Date.now();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO match_user_states (match_id, user_id, deleted_at, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?3, ?3)
+       ON CONFLICT(match_id, user_id) DO UPDATE SET
+         deleted_at = excluded.deleted_at, updated_at = excluded.updated_at`,
+    ).bind(matchId, userId, now),
+    // Physical cleanup: only when the deleter is the owner and no other user
+    // can still see the record (no active non-spectator participant that has
+    // not also deleted it). Shared records and their append-only event stream
+    // are kept for the remaining participants; tombstones survive the row
+    // deletion so offline re-uploads cannot resurrect the record.
+    env.DB.prepare(
+      `DELETE FROM matches
+        WHERE id = ?1 AND owner_user_id = ?2
+          AND NOT EXISTS (
+            SELECT 1 FROM match_players mp
+             WHERE mp.match_id = ?1 AND mp.user_id IS NOT NULL AND mp.user_id <> ?2
+               AND mp.left_at IS NULL AND mp.role != 'spectator'
+               AND NOT EXISTS (
+                 SELECT 1 FROM match_user_states mus
+                  WHERE mus.match_id = ?1 AND mus.user_id = mp.user_id AND mus.deleted_at IS NOT NULL
+               )
+          )`,
+    ).bind(matchId, userId),
+  ]);
+  return json({ deleted: true, matchId, physical: (results[1].meta.changes ?? 0) > 0 });
 }
 
 async function takeOverMatch(request: Request, env: AuthEnv, matchId: string): Promise<Response> {
@@ -433,9 +498,10 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
   if (!ownsDevice) return json({ error: "设备不存在" }, 404);
 
   const resourceId = await scopedUuid(`hei8-r3-cloud-${kind}`, `${session.user.id}:${clientResourceId}`);
-  const response = { result: "accepted", kind, localId, clientResourceId, resourceId, checksum };
+  const response: Record<string, unknown> = { result: "accepted", kind, localId, clientResourceId, resourceId, checksum };
   const statements: D1PreparedStatement[] = [];
   const now = Date.now();
+  let tombstonedMatch = false;
 
   if (kind === "preset") {
     const name = String(snapshot.name).trim();
@@ -466,50 +532,61 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
       ).bind(versionId, resourceId, snapshotJson, checksum, session.user.id, now),
     );
   } else {
-    const players = snapshot.players as unknown[];
-    if (players.length < 1 || players.length > 8) throw new BusinessValidationError("对局玩家无效");
-    const status = snapshot.status === "completed" ? "completed" : "active";
-    const version = Number.isSafeInteger(snapshot.matchVersion) && Number(snapshot.matchVersion) >= 0 ? Number(snapshot.matchVersion) : 0;
-    const createdAt = Number.isSafeInteger(snapshot.createdAt) ? Number(snapshot.createdAt) : now;
-    const startedAt = Number.isSafeInteger(snapshot.startedAt) ? Number(snapshot.startedAt) : createdAt;
-    const endedAt = status === "completed" && Number.isSafeInteger(snapshot.endedAt) ? Number(snapshot.endedAt) : null;
-    statements.push(env.DB.prepare(
-      `INSERT INTO matches
-        (id, owner_user_id, mode, status, privacy, version, write_lease_device_id, write_lease_expires_at,
-         snapshot_json, snapshot_checksum, created_at, updated_at, started_at, ended_at)
-       VALUES (?1, ?2, ?3, ?4, 'private', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-       ON CONFLICT(id) DO UPDATE SET
-         mode = excluded.mode,
-         status = excluded.status,
-         version = excluded.version,
-         write_lease_device_id = excluded.write_lease_device_id,
-         write_lease_expires_at = excluded.write_lease_expires_at,
-         snapshot_json = excluded.snapshot_json,
-         snapshot_checksum = excluded.snapshot_checksum,
-         updated_at = excluded.updated_at,
-         started_at = excluded.started_at,
-         ended_at = excluded.ended_at
-       WHERE matches.owner_user_id = excluded.owner_user_id
-         AND matches.status != 'completed'
-         AND (excluded.status = 'completed' OR excluded.version >= matches.version)`,
-    ).bind(
-      resourceId, session.user.id, String(snapshot.mode).slice(0, 40), status, version,
-      status === "active" ? deviceId : null, status === "active" ? now + LEASE_DURATION_MS : null,
-      snapshotJson, checksum, createdAt, now, startedAt, endedAt,
-    ));
-    for (let seat = 0; seat < players.length; seat += 1) {
-      const player = players[seat];
-      if (!player || typeof player !== "object" || typeof (player as Record<string, unknown>).name !== "string") {
-        throw new BusinessValidationError("对局玩家无效");
-      }
-      const nickname = String((player as Record<string, unknown>).name).trim();
-      if (!nickname || nickname.length > 80) throw new BusinessValidationError("对局玩家无效");
-      const playerId = await scopedUuid("hei8-r3-cloud-match-player", `${resourceId}:${seat}:${String((player as Record<string, unknown>).id ?? nickname)}`);
+    // A match the user deleted must not be recreated by a re-upload (cross
+    // device, offline re-sync): acknowledge the upload and keep the record
+    // deleted instead of inserting it again.
+    const tombstoned = await env.DB.prepare(
+      "SELECT 1 AS deleted FROM match_user_states WHERE match_id = ?1 AND user_id = ?2 AND deleted_at IS NOT NULL",
+    ).bind(resourceId, session.user.id).first<number>("deleted");
+    if (tombstoned) {
+      tombstonedMatch = true;
+      response.deleted = true;
+    } else {
+      const players = snapshot.players as unknown[];
+      if (players.length < 1 || players.length > 8) throw new BusinessValidationError("对局玩家无效");
+      const status = snapshot.status === "completed" ? "completed" : "active";
+      const version = Number.isSafeInteger(snapshot.matchVersion) && Number(snapshot.matchVersion) >= 0 ? Number(snapshot.matchVersion) : 0;
+      const createdAt = Number.isSafeInteger(snapshot.createdAt) ? Number(snapshot.createdAt) : now;
+      const startedAt = Number.isSafeInteger(snapshot.startedAt) ? Number(snapshot.startedAt) : createdAt;
+      const endedAt = status === "completed" && Number.isSafeInteger(snapshot.endedAt) ? Number(snapshot.endedAt) : null;
       statements.push(env.DB.prepare(
-        `INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot, joined_at)
-         VALUES (?1, ?2, ?3, 'player', ?4, ?5)
-         ON CONFLICT(id) DO UPDATE SET nickname_snapshot = excluded.nickname_snapshot`,
-      ).bind(playerId, resourceId, seat, nickname, startedAt));
+        `INSERT INTO matches
+          (id, owner_user_id, mode, status, privacy, version, write_lease_device_id, write_lease_expires_at,
+           snapshot_json, snapshot_checksum, created_at, updated_at, started_at, ended_at)
+         VALUES (?1, ?2, ?3, ?4, 'private', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(id) DO UPDATE SET
+           mode = excluded.mode,
+           status = excluded.status,
+           version = excluded.version,
+           write_lease_device_id = excluded.write_lease_device_id,
+           write_lease_expires_at = excluded.write_lease_expires_at,
+           snapshot_json = excluded.snapshot_json,
+           snapshot_checksum = excluded.snapshot_checksum,
+           updated_at = excluded.updated_at,
+           started_at = excluded.started_at,
+           ended_at = excluded.ended_at
+         WHERE matches.owner_user_id = excluded.owner_user_id
+           AND matches.status != 'completed'
+           AND (excluded.status = 'completed' OR excluded.version >= matches.version)`,
+      ).bind(
+        resourceId, session.user.id, String(snapshot.mode).slice(0, 40), status, version,
+        status === "active" ? deviceId : null, status === "active" ? now + LEASE_DURATION_MS : null,
+        snapshotJson, checksum, createdAt, now, startedAt, endedAt,
+      ));
+      for (let seat = 0; seat < players.length; seat += 1) {
+        const player = players[seat];
+        if (!player || typeof player !== "object" || typeof (player as Record<string, unknown>).name !== "string") {
+          throw new BusinessValidationError("对局玩家无效");
+        }
+        const nickname = String((player as Record<string, unknown>).name).trim();
+        if (!nickname || nickname.length > 80) throw new BusinessValidationError("对局玩家无效");
+        const playerId = await scopedUuid("hei8-r3-cloud-match-player", `${resourceId}:${seat}:${String((player as Record<string, unknown>).id ?? nickname)}`);
+        statements.push(env.DB.prepare(
+          `INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot, joined_at)
+           VALUES (?1, ?2, ?3, 'player', ?4, ?5)
+           ON CONFLICT(id) DO UPDATE SET nickname_snapshot = excluded.nickname_snapshot`,
+        ).bind(playerId, resourceId, seat, nickname, startedAt));
+      }
     }
   }
 
@@ -529,7 +606,7 @@ async function importLocalResource(request: Request, env: AuthEnv): Promise<Resp
     }
     throw error;
   }
-  return json(response, 201);
+  return json(response, tombstonedMatch ? 200 : 201);
 }
 
 async function listReceipts(request: Request, env: AuthEnv): Promise<Response> {
@@ -561,6 +638,7 @@ export async function handleBusinessApiRequest(request: Request, env: AuthEnv): 
     if (owned && request.method === "GET") return await getOwned(request, env, owned[1] as "presets" | "decks", owned[2]);
     const match = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})$/);
     if (match && request.method === "GET") return await getMatch(request, env, match[1]);
+    if (match && request.method === "DELETE") return await deleteMatch(request, env, match[1]);
     const scoreEvent = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})\/score-events$/);
     if (scoreEvent && request.method === "POST") return await appendScoreEvent(request, env, scoreEvent[1]);
     const takeover = pathname.match(/^\/api\/matches\/([0-9a-f-]{36})\/takeover$/);

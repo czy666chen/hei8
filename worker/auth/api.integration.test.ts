@@ -111,6 +111,17 @@ describe("R3 authentication HTTP API", () => {
     expect(cookie).not.toContain(session?.token_digest ?? "missing");
   });
 
+  it("registers a three-character username", async () => {
+    const response = await register("Ab_");
+
+    expect(response.status).toBe(201);
+    await expect(
+      env.DB.prepare("SELECT normalized_username FROM users WHERE normalized_username = ?1")
+        .bind("ab_")
+        .first<string>("normalized_username"),
+    ).resolves.toBe("ab_");
+  });
+
   it("logs in case-insensitively, restores the session, and logs out", async () => {
     await register();
     const login = await post("/api/auth/login", { username: "PLAYER_01", password: "secret1" });

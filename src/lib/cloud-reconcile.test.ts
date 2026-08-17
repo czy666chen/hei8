@@ -12,4 +12,12 @@ describe("cloud match reconciliation", () => {
     expect(result.eightBallHistory).toEqual([completed]);
     expect(reconcileCloudMatches(result, [completed])).toBe(result);
   });
+
+  it("never resurrects a match the user deleted, even from a newer cloud snapshot", () => {
+    const active = createEightBallMatch({ playerNames: ["红方", "蓝方"], raceTo: 3, firstServer: 0, serveRule: "alternate", layout: "split" }, 100);
+    const completed = finishEightBallMatch(active, 500);
+    const result = reconcileCloudMatches({ ...EMPTY_APP_DATA }, [completed], [completed.id]);
+    expect(result.eightBallHistory).toEqual([]);
+    expect(result.activeEightBallMatch).toBeNull();
+  });
 });
