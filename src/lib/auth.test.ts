@@ -34,8 +34,8 @@ describe("R3 authentication rules", () => {
   );
 
   it("uses specific registration username validation messages", () => {
-    expect(validateRegistrationUsername("A1")).toEqual({ normalized: "a1", display: "A1" });
-    expect(() => validateRegistrationUsername("a")).toThrow("用户名至少 2 位");
+    expect(() => validateRegistrationUsername("A1")).toThrow("用户名至少 3 位");
+    expect(() => validateRegistrationUsername("a")).toThrow("用户名至少 3 位");
     expect(() => validateRegistrationUsername("abcdefghi")).toThrow("用户名不能超过 8 位");
     expect(() => validateRegistrationUsername("has dash")).toThrow("用户名仅可包含字母、数字、下划线");
   });

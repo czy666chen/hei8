@@ -92,7 +92,7 @@ import {
 } from "../src/lib/cloud-sync";
 import { reconcileCloudMatches, type CloudMatchSnapshot } from "../src/lib/cloud-reconcile";
 
-const APP_VERSION = "5.3.0";
+const APP_VERSION = "5.3.1";
 
 const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
 

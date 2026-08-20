@@ -169,3 +169,4 @@ curl -i https://<worker>.<subdomain>.workers.dev/api/history
 
 - GitHub 发布 v5.3.0：注册用户名规则收敛、实时房间成员/席位昵称处理、中八设置页开球规则移入比赛资料。
 - 本次仅发布至 GitHub（分支 `codex/friends-match-v2` + 标签 `v5.3.0`）；未执行 Cloudflare 生产部署，生产 Worker 与 D1 不变。
+- Cloudflare 生产部署 v5.3.1：将注册用户名规则调整为生产 D1 兼容的 3-8 位，`0008` 迁移改为仅新增触发器，避免 D1 外键触发器阻塞 `users` 表重建。

@@ -123,7 +123,7 @@ describe("R3 authentication HTTP API", () => {
   });
 
   it.each([
-    { username: "a", error: "用户名至少 2 位" },
+    { username: "a", error: "用户名至少 3 位" },
     { username: "abcdefghi", error: "用户名不能超过 8 位" },
     { username: "has-dash", error: "用户名仅可包含字母、数字、下划线" },
     { username: "中文", error: "用户名仅可包含字母、数字、下划线" },
