@@ -68,7 +68,19 @@ const worker = {
       }, allowedWidths);
     }
 
-    return handler.fetch(request, env, ctx);
+    // SPA 回退：应用只有根页面一条服务端路由，/play、/history/:id、/room/:code
+    // 等均为 GameApp 的客户端路由（history.pushState）。直接刷新或输入网址时，
+    // 服务端对这些路径命中 404；这里回落渲染根页面，由客户端路由按
+    // location.pathname 接管。dev（vinext dev）与 Cloudflare Worker 部署共用本入口。
+    const response = await handler.fetch(request, env, ctx);
+    if (
+      response.status === 404
+      && request.method === "GET"
+      && (request.headers.get("accept") ?? "").includes("text/html")
+    ) {
+      return handler.fetch(new Request(new URL("/", request.url), request), env, ctx);
+    }
+    return response;
   },
   async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     const now = Date.now();

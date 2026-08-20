@@ -95,6 +95,7 @@ import { reconcileCloudMatches, type CloudMatchSnapshot } from "../src/lib/cloud
 const APP_VERSION = "5.3.1";
 
 const DEFAULT_SCORE_PRESET_ID = "builtin-14710";
+const APP_THEME_KEY = "taiqiu-qizhao-theme";
 
 const NAV_ITEMS = [
   { path: "/", label: "对局", icon: "◎" },
@@ -105,6 +106,7 @@ const NAV_ITEMS = [
 ];
 
 type AuthUser = { id: string; username: string; publicCode: string; nickname: string; avatarUrl: string | null };
+type ThemeMode = "day" | "night";
 type SyncView = {
   state: "local" | "pending" | "syncing" | "synced" | "failed" | "readonly";
   pending: number;
@@ -150,7 +152,8 @@ function formatDuration(startedAt: number, endedAt = Date.now()) {
   return minutes < 60 ? `${minutes} 分钟` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
-function AppHeader({ path, active, user, sync, onNavigate }: { path: string; active: boolean; user: AuthUser | null; sync: SyncView; onNavigate: (path: string) => void }) {
+function AppHeader({ path, active, user, sync, theme, onThemeChange, onNavigate }: { path: string; active: boolean; user: AuthUser | null; sync: SyncView; theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; onNavigate: (path: string) => void }) {
+  const nextTheme = theme === "day" ? "night" : "day";
   return (
     <>
       <header className="app-header">
@@ -164,7 +167,14 @@ function AppHeader({ path, active, user, sync, onNavigate }: { path: string; act
             </button>
           ))}
         </nav>
-        <button className="guest-chip" onClick={() => onNavigate("/profile")}><span>{user?.nickname.slice(0, 1) || "游"}</span>{user ? user.nickname : "游客模式"}<i className={`sync-dot ${sync.state}`} /></button>
+        <div className="header-actions">
+          <button className={`theme-toggle ${theme}`} type="button" aria-label={`切换到${nextTheme === "day" ? "白天" : "黑夜"}版本`} onClick={() => onThemeChange(nextTheme)}>
+            {theme === "day"
+              ? <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" /><path d="M12 2.5v3M12 18.5v3M4.3 4.3l2.1 2.1M17.6 17.6l2.1 2.1M2.5 12h3M18.5 12h3M4.3 19.7l2.1-2.1M17.6 6.4l2.1-2.1" /></svg>
+              : <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19.5 14.4A7.6 7.6 0 0 1 9.6 4.5 8.2 8.2 0 1 0 19.5 14.4Z" /></svg>}
+          </button>
+          <button className="guest-chip" onClick={() => onNavigate("/profile")}><span>{user?.nickname.slice(0, 1) || "游"}</span>{user ? user.nickname : "游客模式"}<i className={`sync-dot ${sync.state}`} /></button>
+        </div>
       </header>
       <nav className="mobile-nav" aria-label="手机主导航">
         {NAV_ITEMS.map((item) => (
@@ -1688,6 +1698,7 @@ export default function GameApp() {
   const [deleteTarget, setDeleteTarget] = useState<{ kind: "eight"; match: EightBallMatch } | { kind: "legacy"; match: BilliardsMatch } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [theme, setTheme] = useState<ThemeMode>(() => typeof window !== "undefined" && window.localStorage.getItem(APP_THEME_KEY) === "day" ? "day" : "night");
   const syncRunning = useRef(false);
 
   useEffect(() => {
@@ -1701,6 +1712,7 @@ export default function GameApp() {
       setDeletedMatches(loadDeletedMatchIds(store));
       setPath(window.location.pathname || "/");
       setEightDefaultLayout(store.getRaw(EIGHT_BALL_LAYOUT_KEY) === "split" ? "split" : "stacked");
+      setTheme(window.localStorage.getItem(APP_THEME_KEY) === "day" ? "day" : "night");
       setReady(true);
     });
     return () => {
@@ -1708,6 +1720,12 @@ export default function GameApp() {
       window.removeEventListener("popstate", onPopState);
     };
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme === "day" ? "light" : "dark";
+    window.localStorage.setItem(APP_THEME_KEY, theme);
+  }, [theme]);
 
   useEffect(() => {
     if (ready && !storageIssue) browserStore().write(APP_DATA_CODEC, data);
@@ -2063,7 +2081,7 @@ export default function GameApp() {
 
   return (
     <main className="app-root">
-      <AppHeader path={path} active={!!data.activeMatch || !!data.activeEightBallMatch} user={user} sync={sync} onNavigate={navigate} />
+      <AppHeader path={path} active={!!data.activeMatch || !!data.activeEightBallMatch} user={user} sync={sync} theme={theme} onThemeChange={setTheme} onNavigate={navigate} />
       {page}
       {setupMode && <SetupDialog initialMode={setupMode} savedRules={data.savedRules} scorePresets={data.scorePresets} onClose={() => setSetupMode(null)} onStart={start} user={user} onCloudRoomCreated={enterCloudRoom} />}
       {eightSetupOpen && <EightBallSetupDialog defaultLayout={eightDefaultLayout} onClose={() => setEightSetupOpen(false)} onStart={startEight} user={user} onCloudRoomCreated={enterCloudRoom} />}
