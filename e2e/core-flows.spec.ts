@@ -68,7 +68,8 @@ test("R2.5 中八建局、逐局录入、布局切换、恢复与战绩导出", 
 
 test("奇招牌抽取、使用、安全跳过和刷新恢复", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "开始奇招牌局" }).click();
+  await page.getByRole("button", { name: "玩法" }).click();
+  await page.getByRole("button", { name: "查看并开始" }).click();
   await page.getByRole("button", { name: /安全牌组/ }).click();
   await page.getByRole("button", { name: /下一步：确认规则/ }).click();
   await page.getByRole("button", { name: /确认并开始/ }).click();
@@ -134,7 +135,8 @@ test("R2 转账计分由每名输家支付固定分数", async ({ page }) => {
 
 test("R2 高级抽牌与牌分联动可撤销并进入统一历史", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: /追分 \+ 奇招牌/ }).click();
+  await page.getByRole("button", { name: "玩法" }).click();
+  await page.getByRole("button", { name: "同时加入奇招牌" }).click();
   await page.getByLabel("自动补牌策略").selectOption("after_play");
   await page.getByLabel("卡牌最高安全等级").selectOption("low");
   await page.getByRole("checkbox", { name: "身体动作" }).check();
