@@ -84,6 +84,7 @@ export interface MatchCardState {
   skipped: CardInstance[];
   events: CardEvent[];
   initialHandSize: number;
+  initialHandSizes?: Record<string, number>;
   autoDrawPolicy?: AutoDrawPolicy;
   handLimit?: number;
   exhaustionPolicy?: DeckExhaustionPolicy;
@@ -125,6 +126,7 @@ export interface MatchDraft {
   rules: ScoreRule[];
   cardMode: CardMode;
   initialHandSize: number;
+  initialHandSizes?: number[];
   deckId?: OfficialDeckId;
   playerInitialScores?: number[];
   turnStrategy?: TurnStrategy;
@@ -184,6 +186,82 @@ function cardAllowed(definitionId: string, filter: MatchCardFilter): boolean {
   return !filter.excludedKeywords.some((keyword) => searchable.includes(keyword));
 }
 
+export interface MatchCardStateDraft {
+  cardMode: Exclude<CardMode, "none">;
+  handIds: string[];
+  initialHandSize: number;
+  initialHandSizes?: number[];
+  deckId?: OfficialDeckId;
+  cardAutoDrawPolicy?: AutoDrawPolicy;
+  cardHandLimit?: number;
+  cardExhaustionPolicy?: DeckExhaustionPolicy;
+  cardFilter?: Partial<MatchCardFilter>;
+}
+
+export function createMatchCardState(draft: MatchCardStateDraft, randomIndex = secureRandomIndex): MatchCardState {
+  const officialDeck = getOfficialDeck(draft.deckId);
+  const filter = normalizeCardFilter(draft.cardFilter);
+  const handIds = draft.cardMode === "shared" ? ["shared"] : draft.handIds;
+  let remaining = createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId) && cardAllowed(card.definitionId, filter));
+  const hands: Record<string, CardInstance[]> = {};
+  const perHandMax = draft.cardMode === "shared" ? remaining.length : Math.floor(remaining.length / Math.max(1, handIds.length));
+  const uniformSize = Math.max(0, Math.trunc(draft.initialHandSize));
+  for (const [index, handId] of handIds.entries()) {
+    const requested = draft.cardMode === "independent" && Number.isFinite(draft.initialHandSizes?.[index])
+      ? Math.max(0, Math.trunc(draft.initialHandSizes![index]))
+      : uniformSize;
+    const size = Math.min(requested, perHandMax, remaining.length);
+    const dealt = takeRandom(remaining, size, randomIndex);
+    remaining = dealt.remaining;
+    hands[handId] = dealt.drawn;
+  }
+  const initialHandSize = Math.max(0, ...Object.values(hands).map((hand) => hand.length));
+  const handLimit = Math.max(initialHandSize, Math.min(20, Math.max(1, Math.trunc(draft.cardHandLimit ?? Math.max(initialHandSize, 5)))));
+  const initialHandSizes = Object.fromEntries(Object.entries(hands).map(([handId, hand]) => [handId, hand.length]));
+  return {
+    mode: draft.cardMode,
+    remaining,
+    hands,
+    used: [],
+    skipped: [],
+    events: [],
+    initialHandSize,
+    initialHandSizes,
+    autoDrawPolicy: draft.cardAutoDrawPolicy ?? "manual",
+    handLimit,
+    exhaustionPolicy: draft.cardExhaustionPolicy ?? "stop",
+    filter,
+    deckSnapshot: {
+      id: officialDeck.id,
+      version: officialDeck.version,
+      name: officialDeck.name,
+      definitionIds: Array.from(new Set(remaining.concat(...Object.values(hands)).map((card) => card.definitionId))),
+      cardCount: remaining.length + Object.values(hands).reduce((sum, hand) => sum + hand.length, 0),
+      filter: { ...filter, excludedCategories: [...filter.excludedCategories], excludedKeywords: [...filter.excludedKeywords] },
+    },
+  };
+}
+
+export function redealMatchCardState(cards: MatchCardState, now = Date.now(), randomIndex = secureRandomIndex): MatchCardState {
+  const handIds = Object.keys(cards.hands);
+  let remaining = [...cards.remaining, ...cards.used, ...cards.skipped, ...Object.values(cards.hands).flat()];
+  const hands: Record<string, CardInstance[]> = {};
+  for (const handId of handIds) {
+    const size = cards.initialHandSizes?.[handId] ?? cards.initialHandSize;
+    const dealt = takeRandom(remaining, Math.min(size, remaining.length), randomIndex);
+    remaining = dealt.remaining;
+    hands[handId] = dealt.drawn;
+  }
+  return {
+    ...cards,
+    remaining,
+    hands,
+    used: [],
+    skipped: [],
+    events: [{ id: makeId("card", now), type: "reshuffle", label: "下一局重新发牌", handId: "all", occurredAt: now }, ...cards.events],
+  };
+}
+
 export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = secureRandomIndex): BilliardsMatch {
   const names = draft.playerNames.map((name) => name.trim()).filter(Boolean).slice(0, 8);
   if (names.length < 2) throw new Error("至少需要 2 名玩家");
@@ -199,39 +277,17 @@ export function createMatch(draft: MatchDraft, now = Date.now(), randomIndex = s
   const mode = draft.mode;
   let cards: MatchCardState | undefined;
   if (draft.cardMode !== "none") {
-    const officialDeck = getOfficialDeck(draft.deckId);
-    const filter = normalizeCardFilter(draft.cardFilter);
-    const handIds = draft.cardMode === "shared" ? ["shared"] : players.map((player) => player.id);
-    let remaining = createDeck().filter((card) => officialDeck.definitionIds.includes(card.definitionId) && cardAllowed(card.definitionId, filter));
-    const hands: Record<string, CardInstance[]> = {};
-    const size = Math.max(0, Math.min(Math.trunc(draft.initialHandSize), Math.floor(remaining.length / handIds.length)));
-    const handLimit = Math.max(size, Math.min(20, Math.max(1, Math.trunc(draft.cardHandLimit ?? Math.max(size, 5)))));
-    for (const handId of handIds) {
-      const dealt = takeRandom(remaining, size, randomIndex);
-      remaining = dealt.remaining;
-      hands[handId] = dealt.drawn;
-    }
-    cards = {
-      mode: draft.cardMode,
-      remaining,
-      hands,
-      used: [],
-      skipped: [],
-      events: [],
-      initialHandSize: size,
-      autoDrawPolicy: draft.cardAutoDrawPolicy ?? "manual",
-      handLimit,
-      exhaustionPolicy: draft.cardExhaustionPolicy ?? "stop",
-      filter,
-      deckSnapshot: {
-        id: officialDeck.id,
-        version: officialDeck.version,
-        name: officialDeck.name,
-        definitionIds: Array.from(new Set(remaining.concat(...Object.values(hands)).map((card) => card.definitionId))),
-        cardCount: remaining.length + Object.values(hands).reduce((sum, hand) => sum + hand.length, 0),
-        filter: { ...filter, excludedCategories: [...filter.excludedCategories], excludedKeywords: [...filter.excludedKeywords] },
-      },
-    };
+    cards = createMatchCardState({
+      cardMode: draft.cardMode,
+      handIds: players.map((player) => player.id),
+      initialHandSize: draft.initialHandSize,
+      initialHandSizes: draft.initialHandSizes,
+      deckId: draft.deckId,
+      cardAutoDrawPolicy: draft.cardAutoDrawPolicy,
+      cardHandLimit: draft.cardHandLimit,
+      cardExhaustionPolicy: draft.cardExhaustionPolicy,
+      cardFilter: draft.cardFilter,
+    }, randomIndex);
   }
   return {
     version: 1,

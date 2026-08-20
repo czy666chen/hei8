@@ -44,7 +44,7 @@
 .cloud-room-matches > button small { color: var(--muted); }
 .cloud-room-matches > button span { color: var(--gold); font-size: 11px; font-weight: 800; }
 .cloud-rooms-note { margin: -8px 0 12px; font-size: 12px; color: var(--muted); }
-.deck-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.deck-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .deck-picker button { display: grid; gap: 4px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; text-align: left; background: #101e18; }
 .deck-picker button.active { border-color: var(--mint); box-shadow: inset 0 0 0 1px #79f5bd33; }
 .deck-picker b { font-size: 12px; }
@@ -220,7 +220,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .initial-score { display: grid; grid-template-columns: 1fr 90px auto; gap: 12px; align-items: center; margin-bottom: 12px; padding: 12px 15px; border: 1px solid var(--line-soft); border-radius: 7px; background: #0f1c17; font-size: 12px; font-weight: 700; }.initial-score input, .rule-editor input[type="number"] { width: 100%; height: 36px; border: 1px solid #40594e; border-radius: 5px; color: var(--text); background: #08110e; text-align: center; }.initial-score small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .rule-editor { display: grid; gap: 7px; }.rule-editor label { display: grid; grid-template-columns: 18px 10px minmax(110px, 1fr) 76px 70px 74px; gap: 8px; align-items: center; min-height: 80px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: #101d18; }.rule-editor label.disabled { opacity: .42; }.rule-editor input[type="text"], .rule-editor select { width: 100%; min-width: 0; height: 36px; padding: 0 8px; border: 1px solid #40594e; border-radius: 5px; color: var(--text); background: #08110e; }.rule-description-input { grid-column: 3 / 6; }.rule-order { display: flex; justify-content: flex-end; gap: 4px; }.rule-order button { min-width: 28px; min-height: 30px; padding: 0 6px; border: 1px solid #40594e; border-radius: 4px; color: var(--muted); background: #13231c; font-size: 9px; }.add-score-rule { width: 100%; margin-top: 9px; }.rule-dot { width: 8px; height: 8px; border-radius: 50%; }.rule-dot.mint { background: var(--mint); }.rule-dot.cyan { background: var(--cyan); }.rule-dot.gold { background: var(--gold); }.rule-dot.violet { background: var(--violet); }.rule-dot.red { background: var(--red); }.save-preset { display: flex; gap: 8px; align-items: center; margin-top: 12px; color: var(--muted); font-size: 11px; }
 .preset-manager { display: grid; grid-template-columns: 1fr auto auto; gap: 7px; margin-bottom: 10px; }.preset-manager select, .save-preset > input { min-height: 38px; padding: 0 10px; border: 1px solid #40594e; border-radius: 5px; color: var(--text); background: #08110e; }.preset-manager button { min-width: 58px; border: 1px solid #40594e; border-radius: 5px; color: var(--muted); background: #13231c; }.save-preset { align-items: stretch; }.save-preset label { display: flex; gap: 7px; align-items: center; white-space: nowrap; }.save-preset > input { flex: 1; }
-.segmented { display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; border: 1px solid #30483d; border-radius: 8px; background: #08110e; }.segmented button { min-height: 40px; border-radius: 5px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 700; }.segmented button.active { color: #07100d; background: var(--mint); }.host-mode-picker { grid-template-columns: repeat(2, 1fr); }.host-mode-picker button { display: flex; align-items: center; justify-content: center; gap: 6px; }.host-mode-picker button:disabled { opacity: .45; cursor: not-allowed; }.host-mode-picker em { color: var(--gold); font-size: 9px; font-style: normal; }.safety-callout { display: flex; gap: 12px; align-items: start; margin-top: 14px; padding: 13px; border: 1px solid #66582d; border-radius: 7px; color: #d7c994; background: #2a2513; }.safety-callout > span { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: #2a2513; background: var(--gold); font-weight: 900; }.safety-callout p { margin: 0; font-size: 11px; line-height: 1.6; }.safety-callout b { display: block; color: #f0df9e; }
+.segmented { display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; border: 1px solid #30483d; border-radius: 8px; background: #08110e; }.segmented button { min-height: 40px; border-radius: 5px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 700; }.segmented button.active { color: #07100d; background: var(--mint); }.host-mode-picker, .card-mode-picker { grid-template-columns: repeat(2, 1fr); }.host-mode-picker button { display: flex; align-items: center; justify-content: center; gap: 6px; }.host-mode-picker button:disabled { opacity: .45; cursor: not-allowed; }.host-mode-picker em { color: var(--gold); font-size: 9px; font-style: normal; }.safety-callout { display: flex; gap: 12px; align-items: start; margin-top: 14px; padding: 13px; border: 1px solid #66582d; border-radius: 7px; color: #d7c994; background: #2a2513; }.safety-callout > span { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: #2a2513; background: var(--gold); font-weight: 900; }.safety-callout p { margin: 0; font-size: 11px; line-height: 1.6; }.safety-callout b { display: block; color: #f0df9e; }
 .modal-actions { position: sticky; bottom: 0; display: flex; justify-content: flex-end; gap: 10px; padding: 18px 30px; border-top: 1px solid var(--line); background: #0c1713f5; }.review-card { display: grid; gap: 0; padding: 25px 30px; }.review-card > div { display: grid; grid-template-columns: 150px 1fr; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--line-soft); }.review-card span { color: var(--muted); font-size: 12px; }.review-card b { line-height: 1.8; }.confirm-modal { width: min(460px, 100%); padding: 32px; border: 1px solid #5c443d; border-radius: 12px; text-align: center; background: #111815; box-shadow: var(--shadow); }.warning-icon { display: grid; width: 52px; height: 52px; margin: 0 auto 18px; place-items: center; border-radius: 50%; color: #2a100e; background: var(--red); font-size: 26px; font-weight: 900; }.confirm-modal h2 { margin: 0 0 10px; }.confirm-modal p { margin: 0 0 24px; color: var(--muted); line-height: 1.7; }.confirm-modal .modal-actions { position: static; padding: 0; border: 0; background: transparent; }
 
 .match-page { padding-top: 30px; }.match-banner { display: flex; justify-content: space-between; align-items: end; padding: 24px 28px; border: 1px solid #315344; border-radius: 11px; background: radial-gradient(circle at 80% 0, #1d4c35, transparent 42%), #0f1e18; }.live-label { display: flex; gap: 7px; align-items: center; color: var(--mint); font-size: 10px; font-weight: 800; letter-spacing: .12em; }.live-label i, .turn-chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px var(--mint); }.match-banner h1 { margin: 8px 0 4px; font-size: 32px; }.match-banner p { margin: 0; color: var(--muted); font-size: 12px; }.match-banner-actions { display: flex; gap: 8px; }.match-banner-actions button { padding: 9px 12px; border: 1px solid #3a584b; border-radius: 6px; background: #102119; font-size: 11px; }.match-banner-actions .danger-text { color: var(--red); }.match-info { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 1px; margin-top: 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--line); }.match-info > div { display: grid; gap: 5px; padding: 13px; background: #0d1914; }.match-info span { color: var(--muted); font-size: 9px; }.match-info b { font-size: 11px; line-height: 1.5; }
@@ -314,7 +314,27 @@ html[data-theme="day"] .mode-card.featured { border-color: #b8d2c0; background: 
 html[data-theme="day"] .mode-card > p:not(.kicker), html[data-theme="day"] .quick-grid small, html[data-theme="day"] .recent-copy small, html[data-theme="day"] .paused-matches > button small, html[data-theme="day"] .cloud-room-matches > button small, html[data-theme="day"] .page-title > p:last-child, html[data-theme="day"] .page-title div > p:last-child, html[data-theme="day"] .empty-copy { color: var(--muted); }
 html[data-theme="day"] .mode-symbol { border-color: #e4f0e8; color: #102019; background: #ffffff; }
 html[data-theme="day"] .mode-symbol.score, html[data-theme="day"] .manager-order, html[data-theme="day"] .eight-winner-picker button.active { color: #ffffff; background: var(--mint); }
-html[data-theme="day"] .player-manager, html[data-theme="day"] .manager-list article, html[data-theme="day"] .transfer-panel, html[data-theme="day"] .backfill-panel, html[data-theme="day"] .advanced-card-settings, html[data-theme="day"] .card-control-panel, html[data-theme="day"] .card-score-link, html[data-theme="day"] .settings-list > div > span, html[data-theme="day"] .migration-panel, html[data-theme="day"] .realtime-tool-grid > div, html[data-theme="day"] .realtime-eight-form, html[data-theme="day"] .official-art, html[data-theme="day"] .search { border-color: var(--line); background: var(--panel-2); }
+html[data-theme="day"] .setup-title > span { color: #ffffff; }
+html[data-theme="day"] .player-manager, html[data-theme="day"] .manager-list article, html[data-theme="day"] .transfer-panel, html[data-theme="day"] .backfill-panel, html[data-theme="day"] .advanced-card-settings, html[data-theme="day"] .card-control-panel, html[data-theme="day"] .card-score-link, html[data-theme="day"] .settings-list > div > span, html[data-theme="day"] .migration-panel, html[data-theme="day"] .realtime-tool-grid > div, html[data-theme="day"] .realtime-eight-form, html[data-theme="day"] .official-art, html[data-theme="day"] .search, html[data-theme="day"] .deck-picker button, html[data-theme="day"] .player-inputs label, html[data-theme="day"] .initial-score, html[data-theme="day"] .rule-editor label, html[data-theme="day"] .safety-callout, html[data-theme="day"] .eight-form-grid input, html[data-theme="day"] .eight-form-grid select { border-color: var(--line); background: var(--panel-2); }
+html[data-theme="day"] .deck-picker button.active { border-color: #81bd94; background: #ffffff; box-shadow: inset 0 0 0 1px rgba(22, 131, 74, .12); }
+html[data-theme="day"] .rule-editor label:focus-within, html[data-theme="day"] .player-inputs label:focus-within { border-color: #81bd94; background: var(--panel-2); box-shadow: 0 0 0 1px rgba(22, 131, 74, .12); }
+html[data-theme="day"] .player-inputs input, html[data-theme="day"] .initial-score input, html[data-theme="day"] .rule-editor input[type="number"], html[data-theme="day"] .rule-editor input[type="text"], html[data-theme="day"] .rule-editor select, html[data-theme="day"] .preset-manager select, html[data-theme="day"] .save-preset > input, html[data-theme="day"] .advanced-card-settings select, html[data-theme="day"] .advanced-card-settings input { border-color: #c9ded0; color: var(--text); background: var(--panel-2); }
+html[data-theme="day"] .setup-modal input:not([type="checkbox"]), html[data-theme="day"] .setup-modal select, html[data-theme="day"] .setup-modal textarea, html[data-theme="day"] .eight-setup input:not([type="checkbox"]), html[data-theme="day"] .eight-setup select, html[data-theme="day"] .eight-setup textarea { min-height: 44px; padding: 0 12px; border: 1px solid #c9ded0; border-radius: 7px; color: var(--text); background: var(--panel-2); box-shadow: none; }
+html[data-theme="day"] .setup-modal input:not([type="checkbox"]), html[data-theme="day"] .setup-modal textarea, html[data-theme="day"] .eight-setup input:not([type="checkbox"]), html[data-theme="day"] .eight-setup textarea { appearance: none; }
+html[data-theme="day"] .setup-modal input:not([type="checkbox"]):focus, html[data-theme="day"] .setup-modal select:focus, html[data-theme="day"] .setup-modal textarea:focus, html[data-theme="day"] .eight-setup input:not([type="checkbox"]):focus, html[data-theme="day"] .eight-setup select:focus, html[data-theme="day"] .eight-setup textarea:focus { border-color: #81bd94; outline: 0; box-shadow: 0 0 0 3px rgba(22, 131, 74, .12); }
+html[data-theme="day"] .player-inputs label, html[data-theme="day"] .player-inputs .player-input { grid-template-columns: 38px minmax(0, 1fr) 96px 36px; gap: 0; overflow: hidden; border: 1px solid var(--line); background: var(--panel-2); }
+html[data-theme="day"] .player-inputs label > span { display: grid; min-height: 44px; place-items: center; border-radius: 7px; color: var(--mint); background: #eaf6ee; }
+html[data-theme="day"] .player-inputs label button { min-height: 44px; border: 1px solid #c9ded0; border-radius: 7px; color: var(--muted); background: var(--panel-2); }
+html[data-theme="day"] .player-inputs .player-name-input, html[data-theme="day"] .eight-setup .player-inputs input { border: 0 !important; border-radius: 0 !important; background: transparent; }
+html[data-theme="day"] .player-score-input { border: 1px solid #c9ded0 !important; border-radius: 7px; text-align: center; }
+html[data-theme="day"] .rule-name-input, html[data-theme="day"] .rule-description-input { border: 1px solid #c9ded0 !important; border-radius: 7px !important; box-shadow: none !important; }
+html[data-theme="day"] .advanced-card-settings fieldset { border-color: #c9ded0; background: rgba(255, 255, 255, .48); }
+html[data-theme="day"] .advanced-card-settings fieldset label { color: var(--text); }
+html[data-theme="day"] .rule-order button, html[data-theme="day"] .preset-manager button { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .add-player, html[data-theme="day"] .registered-entry { border-color: #b8d2c0; background: #ffffff; }
+html[data-theme="day"] .safety-callout { color: #725710; background: #fff9e7; }
+html[data-theme="day"] .safety-callout b { color: #5c4306; }
+html[data-theme="day"] .review-card > div { border-color: var(--line-soft); }
 html[data-theme="day"] .segmented { border-color: #c9ded0; background: #f1faf4; }
 html[data-theme="day"] .segmented button.active { color: #ffffff; background: var(--mint); }
 html[data-theme="day"] .official-art span { border-color: #173923; color: #102019; background: #ffffff; }
@@ -323,7 +343,17 @@ html[data-theme="day"] .history-delete { border-color: #f0b8ad; color: #b42b1f; 
 html[data-theme="day"] .history-card > .history-card-main > .history-type, html[data-theme="day"] .history-card > .history-card-main > .history-type.eight { color: #ffffff; }
 html[data-theme="day"] input, html[data-theme="day"] select, html[data-theme="day"] textarea { border-color: #c9ded0; color: var(--text); background: #ffffff; }
 html[data-theme="day"] .eight-scoreboard input { color: #ffffff; background: transparent; }
-html[data-theme="day"] .score-actions button, html[data-theme="day"] .card-control-panel button, html[data-theme="day"] .timeline-row.unified button, html[data-theme="day"] .realtime-rule-grid button, html[data-theme="day"] .realtime-tool-grid button, html[data-theme="day"] .realtime-score-actions button, html[data-theme="day"] .realtime-score-events button, html[data-theme="day"] .eight-winner-picker button, html[data-theme="day"] .eight-topbar button, html[data-theme="day"] .export-actions button, html[data-theme="day"] .member-actions button, html[data-theme="day"] .room-members button { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .score-actions button, html[data-theme="day"] .card-control-panel button, html[data-theme="day"] .timeline-row.unified button, html[data-theme="day"] .realtime-rule-grid button, html[data-theme="day"] .realtime-tool-grid button, html[data-theme="day"] .realtime-score-actions button, html[data-theme="day"] .realtime-score-events button, html[data-theme="day"] .eight-winner-picker button, html[data-theme="day"] .eight-topbar button, html[data-theme="day"] .export-actions button, html[data-theme="day"] .match-banner-actions button, html[data-theme="day"] .manager-actions button, html[data-theme="day"] .member-actions button:not(.danger-button), html[data-theme="day"] .room-members button:not(.danger-button), html[data-theme="day"] .room-topbar-actions button:not(.danger-button) { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .match-banner-actions .danger-text, html[data-theme="day"] .manager-actions .leave-button { color: var(--red); }
+html[data-theme="day"] .manager-actions .current-button { color: var(--mint); }
+html[data-theme="day"] .match-info { border-color: var(--line); background: var(--line); }
+html[data-theme="day"] .match-info > div, html[data-theme="day"] .ranking-grid button { border-color: var(--line); color: var(--text); background: var(--panel-2); }
+html[data-theme="day"] .ranking-grid button.selected { border-color: var(--mint); }
+html[data-theme="day"] .turn-chip { border-color: #b8d2c0; color: var(--muted); background: #ffffff; }
+html[data-theme="day"] .transfer-losers label { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .special-score-panel, html[data-theme="day"] .card-score-link { border-color: #ead69c; color: var(--text); background: #fff9e7; }
+html[data-theme="day"] .special-score-panel label { color: #725710; }
+html[data-theme="day"] .special-score-panel button, html[data-theme="day"] .ledger-correct, html[data-theme="day"] .card-log > div button { border-color: #d5bb74; color: #725710; background: #ffffff; }
 html[data-theme="day"] .match-dock, html[data-theme="day"] .room-dock, html[data-theme="day"] .mobile-nav { border-color: var(--line); background: #fffffff2; box-shadow: 0 16px 34px rgba(16, 52, 30, .16); }
 html[data-theme="day"] .match-dock button, html[data-theme="day"] .room-dock button { color: var(--muted); background: #f1faf4; }
 html[data-theme="day"] .match-dock .dock-main, html[data-theme="day"] .room-dock .dock-main { color: #ffffff; background: var(--mint); }
@@ -338,9 +368,37 @@ html[data-theme="day"] .loading-screen { background: var(--bg); }
 html[data-theme="day"] .loading-screen span { border-color: #173923; color: #102019; background: #ffffff; }
 html[data-theme="day"] .room-topbar { border-color: var(--line); background: radial-gradient(circle at 80% 0, rgba(22, 131, 74, .16), transparent 42%), #ffffff; }
 html[data-theme="day"] .readonly-banner { border-color: #b8d2c0; background: #f1faf4; }
+html[data-theme="day"] .realtime-card-panel, html[data-theme="day"] .card-ledger, html[data-theme="day"] .realtime-score-players, html[data-theme="day"] .room-kicked { border-color: var(--line); background: var(--panel); box-shadow: 0 8px 22px rgba(20, 85, 43, .06); }
+html[data-theme="day"] .trick-card { border-color: #c9ded0; color: var(--text); background: linear-gradient(150deg, #ffffff, #f1faf4); }
+html[data-theme="day"] .trick-card > p { color: var(--muted); }
+html[data-theme="day"] .trick-card aside { border-left-color: var(--gold); color: #725710; background: #fff9e7; }
+html[data-theme="day"] .trick-card > div:last-child button { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .trick-card > div:last-child button:first-child { color: #ffffff; background: var(--mint); }
+html[data-theme="day"] .hand-tabs button { color: #ffffff; background: #102019; }
+html[data-theme="day"] .hand-tabs button.active { border-color: var(--mint); color: #ffffff; background: var(--mint); }
+html[data-theme="day"] .hand-tabs small { color: #ffffffb3; }
+html[data-theme="day"] .empty-state button { color: #ffffff; }
+html[data-theme="day"] .realtime-card-actions .primary { color: #ffffff; background: var(--mint); }
+html[data-theme="day"] .realtime-card-actions .secondary, html[data-theme="day"] .member-actions select { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .realtime-player-slot > button, html[data-theme="day"] .realtime-rule-grid button, html[data-theme="day"] .realtime-tool-grid > div { border-color: var(--line); color: var(--text); background: var(--panel-2); }
+html[data-theme="day"] .realtime-player-slot > button.selected { border-color: var(--gold); background: #fff9e7; }
+html[data-theme="day"] .realtime-player-slot > button.current { box-shadow: inset 3px 0 var(--mint); }
+html[data-theme="day"] .realtime-score-tools { border-top-color: var(--line); }
+html[data-theme="day"] .realtime-score-tools[open] { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+html[data-theme="day"] .realtime-tool-grid input, html[data-theme="day"] .realtime-tool-grid select, html[data-theme="day"] .realtime-note input { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .realtime-tool-grid button, html[data-theme="day"] .realtime-score-actions button, html[data-theme="day"] .realtime-score-events button, html[data-theme="day"] .room-kicked button { border-color: #c9ded0; color: var(--text); background: #ffffff; }
+html[data-theme="day"] .realtime-tool-grid .realtime-emphasis-button { border-color: #b39145; color: #725710; background: #fff9e7; }
+html[data-theme="day"] .room-topbar-actions .danger-button, html[data-theme="day"] .danger-button { border-color: transparent; color: #ffffff; background: var(--red); }
+html[data-theme="day"] .room-kicked article > span { color: #ffffff; background: var(--red); }
+html[data-theme="day"] .room-members article > span { color: #ffffff; }
 html[data-theme="day"] .eight-scoreboard { border-color: #dbe9df; background: #ffffff; }
 html[data-theme="day"] .eight-scoreboard article.red { background: #e33445; }
 html[data-theme="day"] .eight-scoreboard article.blue { background: #1677e8; }
+html[data-theme="day"] .eight-scoreboard article, html[data-theme="day"] .eight-scoreboard article > strong { color: #ffffff; }
+html[data-theme="day"] .realtime-eight-score { border-color: #dbe9df; background: #ffffff; }
+html[data-theme="day"] .realtime-eight-score article, html[data-theme="day"] .realtime-eight-score strong { color: #ffffff; }
+html[data-theme="day"] .realtime-eight-score small { color: #ffffff99; }
+html[data-theme="day"] .realtime-eight-score .player-rename { border-color: #ffffff55; color: #ffffff; background: #0002; }
 html[data-theme="day"] .raw-events pre { color: #102019; background: #f1faf4; }
 
 .sync-dot { width: 8px; height: 8px; margin-left: 8px; border-radius: 50%; background: #7b8190; }
@@ -394,16 +452,30 @@ html[data-theme="day"] .raw-events pre { color: #102019; background: #f1faf4; }
 .realtime-score-events small, .readonly-hint { color: var(--muted); font-size: 9px; }
 .realtime-score-events em { color: var(--muted); font-size: 9px; }
 
+.member-actions label { display: flex; gap: 5px; align-items: center; color: var(--muted); font-size: 9px; }
+.member-actions select { min-height: 31px; padding: 0 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: #08110e; }
+.realtime-card-panel { display: grid; gap: 12px; }
+.realtime-card-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.realtime-card-actions button { min-height: 38px; padding: 8px 10px; font-size: 9px; }
+.card-ledger { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.card-ledger article { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.card-ledger small { color: var(--muted); font-size: 9px; }
+.card-ledger article { padding-top: 7px; border-top: 1px solid var(--line-soft); }
+.card-ledger article > span { color: var(--muted); font-size: 9px; }
+
 .realtime-eight-board { display: grid; gap: 12px; margin-top: 14px; padding: 16px; border: 1px solid #594f70; border-radius: 10px; background: #111521; }
 .realtime-eight-board > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .realtime-eight-board h3 { margin: 0; font: 800 22px "Oswald"; }
 .target-notice { margin: 0; padding: 10px 12px; border: 1px solid #806f38; border-radius: 7px; color: #f0df9e; background: #2a2513; font-size: 10px; }
-.realtime-eight-score { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.realtime-eight-score article { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; align-items: center; padding: 15px; border-radius: 9px; color: #fff; }
-.realtime-eight-score article.red { background: #cf3443; }
-.realtime-eight-score article.blue { background: #176bd0; }
-.realtime-eight-score strong { grid-row: 1 / 3; grid-column: 2; font: 800 45px "Oswald"; }
-.realtime-eight-score small { opacity: .8; font-size: 9px; }
+.realtime-eight-score { display: grid; min-height: 420px; overflow: hidden; grid-template-columns: 1fr 1fr; border: 1px solid #33483f; border-radius: 14px; background: #09120f; }
+.realtime-eight-score article { display: grid; grid-template-columns: 1fr auto; grid-template-rows: 1fr auto auto; gap: 12px 18px; min-width: 0; padding: 30px; color: #fff; }
+.realtime-eight-score article + article { border-left: 2px solid #e9f4ee22; }
+.realtime-eight-score article.red { background: #e33445; }
+.realtime-eight-score article.blue { background: #1677e8; }
+.realtime-eight-score span { align-self: start; font-size: 23px; font-weight: 800; }
+.realtime-eight-score strong { grid-row: 1 / 4; grid-column: 2; align-self: center; font: 800 clamp(90px, 16vw, 190px)/.8 "Oswald"; }
+.realtime-eight-score small { align-self: end; color: #ffffff99; font-size: 11px; line-height: 1.7; }
+.realtime-eight-score .player-rename { width: max-content; border-color: #ffffff33; color: #ffffffcc; background: #0002; }
 .realtime-eight-form { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
 .realtime-eight-form .eight-winner-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .realtime-eight-form .eight-winner-picker button { min-height: 40px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: #101d18; font-weight: 800; }
@@ -419,7 +491,7 @@ html[data-theme="day"] .raw-events pre { color: #102019; background: #f1faf4; }
 @media (max-width: 680px) {
   .cloud-matches article { align-items: stretch; flex-direction: column; }.cloud-matches article > div:last-child { display: grid; grid-template-columns: 1fr 1fr; }.readonly-banner { margin-inline: 14px; align-items: flex-start; flex-direction: column; }
   .room-entry-grid { grid-template-columns: 1fr; }.room-code-card { align-items: flex-start; flex-direction: column; }.room-members article { grid-template-columns: 38px 1fr; }.room-members article > button { grid-column: 2; }
-  .realtime-eight-score { grid-template-columns: 1fr; }.realtime-eight-ledger > article { grid-template-columns: 42px 1fr auto; }.realtime-eight-ledger article > button { grid-column: 2 / -1; }.realtime-eight-submit { display: grid; grid-template-columns: 1fr; }
+  .realtime-eight-score { min-height: 480px; grid-template-columns: 1fr; }.realtime-eight-score article { grid-template-columns: 1fr auto; grid-template-rows: 1fr auto auto; padding: 18px; }.realtime-eight-score article + article { border-top: 2px solid #e9f4ee22; border-left: 0; }.realtime-eight-score span { font-size: 16px; }.realtime-eight-score strong { font-size: 88px; }.realtime-eight-ledger > article { grid-template-columns: 42px 1fr auto; }.realtime-eight-ledger article > button { grid-column: 2 / -1; }.realtime-eight-submit { display: grid; grid-template-columns: 1fr; }
 }
 
 @media (max-width: 680px) {

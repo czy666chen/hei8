@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "./chase-scoring";
+import { redealRoomCards, type RoomCardState } from "./room-cards";
 
 export type EightBallWinType = "normal" | "break_clear" | "runout";
 export type EightBallServeRule = "alternate" | "winner";
@@ -32,6 +33,7 @@ export type RealtimeEightBallState = {
   rounds: RealtimeEightBallRound[];
   stats: Record<string, RealtimeEightBallStats>;
   roundStartedAt: number;
+  cards?: RoomCardState;
 };
 
 export type EightBallCommandProjection = {
@@ -169,6 +171,7 @@ export function projectEightBallCommand(
       voided: false,
     };
     const next = recalculateEightBallState({ ...state, rounds: [...state.rounds, round], roundStartedAt: command.now });
+    if (next.cards) next.cards = redealRoomCards(next.cards, command.now + 1);
     return { kind: "eight_ball.round_recorded", payload: recordedPayload(next.rounds.at(-1)!), state: next };
   }
 

@@ -9,6 +9,7 @@ import {
   projectEightBallCommand,
   type RealtimeEightBallState,
 } from "./eight-ball-scoring";
+import { projectRoomCardCommand } from "./room-cards";
 
 export type RoomRole = "host" | "player" | "spectator";
 export type RoomPayload = JsonObject;
@@ -70,6 +71,8 @@ type ConnectionAttachment = {
   role: RoomRole;
   connectedAt: number;
 };
+
+type SnapshotObserver = { userId: string; role: RoomRole };
 
 export class MatchRoom extends DurableObject<MatchRoomEnv> {
   constructor(ctx: DurableObjectState, env: MatchRoomEnv) {
@@ -386,6 +389,9 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     if (chaseScore) {
       const seat = chaseScore.players.find((player) => player.id === input.playerId && player.active);
       if (!seat) return { ok: false, code: "not_found", currentVersion: meta.version };
+      if (seat.userId || chaseScore.players.some((player) => player.userId === target.userId)) {
+        return { ok: false, code: "invalid_command", currentVersion: meta.version };
+      }
       const players = chaseScore.players.map((player) =>
         player.id === seat.id ? { ...player, nickname: displayName, userId: target.userId } : player);
       const result = this.ctx.storage.transactionSync(() => {
@@ -404,6 +410,9 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     if (eightBall) {
       const seat = eightBall.players.find((player) => player.id === input.playerId);
       if (!seat) return { ok: false, code: "not_found", currentVersion: meta.version };
+      if (seat.userId || eightBall.players.some((player) => player.userId === target.userId)) {
+        return { ok: false, code: "invalid_command", currentVersion: meta.version };
+      }
       const players = eightBall.players.map((player) =>
         player.id === seat.id ? { ...player, nickname: displayName, userId: target.userId } : player) as RealtimeEightBallState["players"];
       const result = this.ctx.storage.transactionSync(() => {
@@ -571,6 +580,26 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     }
     const chaseScore = this.chaseScoreState();
     const eightBall = this.eightBallState();
+    if (input.kind.startsWith("card.")) {
+      const state = chaseScore ?? eightBall;
+      const cards = state?.cards;
+      const playerId = typeof input.payload.playerId === "string" ? input.payload.playerId : undefined;
+      const player = state?.players.find((item) => item.id === playerId);
+      if (member.role !== "host" && (!player || player.userId !== input.actorUserId)) {
+        return { ok: false, code: "forbidden", currentVersion: meta.version };
+      }
+      const projection = projectRoomCardCommand(cards, {
+        kind: input.kind,
+        payload: input.payload,
+        now: Date.now(),
+      });
+      if (typeof projection === "string") return { ok: false, code: projection, currentVersion: meta.version };
+      return this.ctx.storage.transactionSync(() => {
+        if (chaseScore) this.persistChaseScoreState({ ...chaseScore, cards: projection.cards });
+        else if (eightBall) this.persistEightBallState({ ...eightBall, cards: projection.cards });
+        return this.appendEvent(meta.version, input.operationId, input.actorUserId, projection.kind, projection.payload);
+      });
+    }
     const projection = chaseScore
       ? projectChaseCommand(chaseScore, this.scoringEvents(), {
           kind: input.kind,
@@ -599,6 +628,10 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     return this.snapshot(afterSequenceNo);
   }
 
+  async getSnapshotFor(observer: SnapshotObserver, afterSequenceNo = 0): Promise<RoomSnapshot> {
+    return this.snapshot(afterSequenceNo, observer);
+  }
+
   async getSync(afterSequenceNo = 0): Promise<RoomSync> {
     return this.sync(afterSequenceNo);
   }
@@ -623,7 +656,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ userId, role, connectedAt: Date.now() } satisfies ConnectionAttachment);
     const requestedAfter = Number(new URL(request.url).searchParams.get("after") ?? 0);
-    const sync = this.sync(Number.isSafeInteger(requestedAfter) ? requestedAfter : 0);
+    const sync = this.sync(Number.isSafeInteger(requestedAfter) ? requestedAfter : 0, { userId, role });
     server.send(JSON.stringify({ type: "snapshot", ...sync }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -642,7 +675,8 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     }
     if (body.type === "sync") {
       const after = typeof body.afterSequenceNo === "number" ? body.afterSequenceNo : 0;
-      ws.send(JSON.stringify({ type: "snapshot", ...this.sync(after) }));
+      const attachment = ws.deserializeAttachment() as ConnectionAttachment | null;
+      ws.send(JSON.stringify({ type: "snapshot", ...this.sync(after, attachment ? { userId: attachment.userId, role: attachment.role } : undefined) }));
       return;
     }
     if (body.type !== "command") {
@@ -665,7 +699,10 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
       payload,
     });
     ws.send(JSON.stringify({ type: "command-result", result }));
-    if (result.ok && !result.duplicate) this.broadcast({ type: "event", event: result.event, version: result.version }, ws);
+    if (result.ok && !result.duplicate) {
+      if (result.event.kind.startsWith("card.")) this.broadcastView((observer) => ({ type: "event", event: this.projectEvent(result.event, observer), version: result.version }), ws);
+      else this.broadcast({ type: "event", event: result.event, version: result.version }, ws);
+    }
   }
 
   webSocketClose(ws: WebSocket, code: number, reason: string): void {
@@ -790,7 +827,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     };
   }
 
-  private snapshot(afterSequenceNo = 0): RoomSnapshot {
+  private snapshot(afterSequenceNo = 0, observer?: SnapshotObserver): RoomSnapshot {
     const meta = this.meta();
     if (!meta) throw new Error("Room is not initialized");
     const members = this.ctx.storage.sql.exec<{
@@ -819,13 +856,13 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
         joinedAt: member.joined_at,
         playerType: "registered",
       })),
-      events: events.map((event) => this.toEvent(event)),
-      chaseScore: this.chaseScoreState() ?? null,
-      eightBall: this.eightBallState() ?? null,
+      events: events.map((event) => this.projectEvent(this.toEvent(event), observer)),
+      chaseScore: this.projectChaseScore(this.chaseScoreState(), observer) ?? null,
+      eightBall: this.projectEightBall(this.eightBallState(), observer) ?? null,
     };
   }
 
-  private sync(afterSequenceNo: number): RoomSync {
+  private sync(afterSequenceNo: number, observer?: SnapshotObserver): RoomSync {
     const currentVersion = this.meta()?.version ?? 0;
     const normalizedAfter = Number.isSafeInteger(afterSequenceNo) && afterSequenceNo >= 0
       ? afterSequenceNo
@@ -837,7 +874,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
       ? normalizedAfter
       : Math.max(0, currentVersion - MAX_INCREMENTAL_EVENTS);
     return {
-      snapshot: this.snapshot(fromSequenceNo),
+      snapshot: this.snapshot(fromSequenceNo, observer),
       reset: !canIncrement,
       fromSequenceNo,
     };
@@ -1110,6 +1147,37 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     }));
   }
 
+  private ownsPlayer(player: { userId?: string }, observer?: SnapshotObserver): boolean {
+    return !!observer && !!player.userId && player.userId === observer.userId;
+  }
+
+  private projectCards<T extends { cards?: ChaseScoreState["cards"]; players: Array<{ id: string; userId?: string }> }>(state: T | undefined, observer?: SnapshotObserver): T | undefined {
+    if (!state?.cards) return state;
+    if (observer?.role === "host") return state;
+    const visibleHands: typeof state.cards.hands = {};
+    for (const player of state.players) {
+      const hand = state.cards.hands[player.id] ?? [];
+      visibleHands[player.id] = this.ownsPlayer(player, observer) ? hand : [];
+    }
+    return { ...state, cards: { ...state.cards, hands: visibleHands } };
+  }
+
+  private projectChaseScore(state: ChaseScoreState | undefined, observer?: SnapshotObserver): ChaseScoreState | undefined {
+    return this.projectCards(state, observer);
+  }
+
+  private projectEightBall(state: RealtimeEightBallState | undefined, observer?: SnapshotObserver): RealtimeEightBallState | undefined {
+    return this.projectCards(state, observer);
+  }
+
+  private projectEvent(event: RoomEvent, observer?: SnapshotObserver): RoomEvent {
+    if (!event.kind.startsWith("card.")) return event;
+    if (observer?.role === "host" || event.kind === "card.played" || event.kind === "card.skipped") return event;
+    const payload = { ...event.payload };
+    delete payload.card;
+    return { ...event, payload };
+  }
+
   private toEvent(row: {
     sequence_no: number;
     operation_id: string;
@@ -1150,6 +1218,14 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     const encoded = JSON.stringify(message);
     for (const socket of this.ctx.getWebSockets()) {
       if (socket !== except) socket.send(encoded);
+    }
+  }
+
+  private broadcastView(build: (observer: SnapshotObserver) => unknown, except?: WebSocket): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === except) continue;
+      const attachment = socket.deserializeAttachment() as ConnectionAttachment | null;
+      if (attachment) socket.send(JSON.stringify(build({ userId: attachment.userId, role: attachment.role })));
     }
   }
 }

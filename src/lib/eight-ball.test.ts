@@ -16,6 +16,7 @@ import {
 const create = () => createEightBallMatch({
   playerNames: ["红方", "蓝方"], raceTo: 3, firstServer: 0, serveRule: "alternate", layout: "stacked",
 }, 100);
+const first = () => 0;
 
 describe("中八追加式比赛模型", () => {
   it.each(["normal", "break_clear", "runout"] as const)("记录 %s 并累加胜方统计", (winType) => {
@@ -83,5 +84,26 @@ describe("中八追加式比赛模型", () => {
     match = recordEightBallRound(match, { winnerId: match.players[0].id, winType: "normal", fouls: {}, note: "", startedAt: 110 }, 200);
     expect(match.status).toBe("active");
     expect(calculateEightBallStats(match)[match.players[0].id].score).toBe(1);
+  });
+
+  it("可启用独立奇招牌并在每局后重发", () => {
+    const match = createEightBallMatch({
+      playerNames: ["A", "B"],
+      raceTo: 3,
+      firstServer: 0,
+      serveRule: "alternate",
+      layout: "split",
+      cardMode: "independent",
+      initialHandSizes: [1, 2],
+      initialHandSize: 1,
+    }, 100, first);
+    expect(match.cards!.hands[match.players[0].id]).toHaveLength(1);
+    expect(match.cards!.hands[match.players[1].id]).toHaveLength(2);
+    const before = match.cards!.hands[match.players[0].id][0].instanceId;
+    const scored = recordEightBallRound(match, { winnerId: match.players[0].id, winType: "normal", fouls: {}, note: "", startedAt: 110 }, 200);
+    expect(scored.cards!.hands[match.players[0].id]).toHaveLength(1);
+    expect(scored.cards!.hands[match.players[1].id]).toHaveLength(2);
+    expect(scored.cards!.hands[match.players[0].id][0].instanceId).not.toBe(before);
+    expect(scored.cards!.events[0]).toMatchObject({ type: "reshuffle", label: "下一局重新发牌" });
   });
 });

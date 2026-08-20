@@ -1,3 +1,5 @@
+import type { RoomCardState } from "./room-cards";
+
 export type JsonScalar = string | number | boolean | null;
 export type JsonValue = JsonScalar | JsonScalar[] | { [key: string]: JsonScalar };
 export type JsonObject = { [key: string]: JsonValue };
@@ -27,6 +29,7 @@ export type ChaseScoreState = {
   rules: ChaseScoreRule[];
   currentPlayerId: string;
   turnStrategy: "fixed" | "winner_stays";
+  cards?: RoomCardState;
 };
 
 export type ChaseScoringEvent = {

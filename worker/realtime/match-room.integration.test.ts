@@ -3,6 +3,7 @@ import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MatchRoom, RoomPayload } from "./match-room";
 import { initializeRoomWithRetry, type RealtimeRequestContext, type RoomInitializationInput } from "./api";
+import { initRoomCards, redealRoomCards } from "./room-cards";
 
 declare const __D1_MIGRATIONS__: D1Migration[];
 
@@ -197,6 +198,117 @@ describe("R4 MatchRoom Durable Object", () => {
       fromSequenceNo: 0,
       snapshot: { version: 2, events: [{ sequenceNo: 1 }, { sequenceNo: 2 }] },
     });
+  });
+
+  it("keeps realtime independent hands private by observer", async () => {
+    const room = env.MATCH_ROOM.getByName("match-room-cards-private");
+    const cards = initRoomCards({ playerIds: ["player-1", "player-2"], handSizes: [1, 1], randomIndex: () => 0 });
+    await room.initialize({
+      matchId: crypto.randomUUID(),
+      roomCode: "CRD234",
+      host: { userId: "host-1", nickname: "Host", role: "host", joinedAt: 1 },
+      chaseScore: {
+        mode: "score_cards",
+        players: [
+          { id: "player-1", nickname: "A", userId: "user-a", initialScore: 0, score: 0, active: true },
+          { id: "player-2", nickname: "B", userId: "user-b", initialScore: 0, score: 0, active: true },
+        ],
+        rules: [{ id: "win", label: "普胜", value: 1, kind: "gain", enabled: true }],
+        currentPlayerId: "player-1",
+        turnStrategy: "fixed",
+        cards,
+      },
+    });
+
+    const host = await room.getSnapshotFor({ userId: "host-1", role: "host" });
+    expect(host.chaseScore!.cards!.hands["player-1"]).toHaveLength(1);
+    expect(host.chaseScore!.cards!.hands["player-2"]).toHaveLength(1);
+
+    const playerA = await room.getSnapshotFor({ userId: "user-a", role: "player" });
+    expect(playerA.chaseScore!.cards!.hands["player-1"]).toHaveLength(1);
+    expect(playerA.chaseScore!.cards!.hands["player-2"]).toHaveLength(0);
+
+    const spectator = await room.getSnapshotFor({ userId: "viewer", role: "spectator" });
+    expect(spectator.chaseScore!.cards!.hands["player-1"]).toHaveLength(0);
+    expect(spectator.chaseScore!.cards!.hands["player-2"]).toHaveLength(0);
+  });
+
+  it("keeps every hand key and requested hand size when starting a new card round", async () => {
+    const cards = initRoomCards({ playerIds: ["player-1", "player-2"], handSizes: [2, 3], randomIndex: () => 0 });
+    const redealt = redealRoomCards(cards, 2, () => 0);
+    expect(Object.keys(redealt.hands)).toEqual(["player-1", "player-2"]);
+    expect(redealt.hands["player-1"]).toHaveLength(2);
+    expect(redealt.hands["player-2"]).toHaveLength(3);
+
+    const exhausted = redealRoomCards({ ...cards, remaining: [], pendingHandSizes: { "player-1": 10, "player-2": 10 } }, 3, () => 0);
+    expect(Object.keys(exhausted.hands)).toEqual(["player-1", "player-2"]);
+    expect(Object.values(exhausted.hands).flat()).toHaveLength(5);
+
+    const room = env.MATCH_ROOM.getByName("match-room-card-redeal");
+    await room.initialize({
+      matchId: crypto.randomUUID(),
+      roomCode: "RDL234",
+      host: { userId: "host-1", nickname: "Host", role: "host", joinedAt: 1 },
+      chaseScore: {
+        mode: "score_cards",
+        players: [
+          { id: "player-1", nickname: "A", userId: "user-a", initialScore: 0, score: 0, active: true },
+          { id: "player-2", nickname: "B", userId: "user-b", initialScore: 0, score: 0, active: true },
+        ],
+        rules: [{ id: "win", label: "普胜", value: 1, kind: "gain", enabled: true }],
+        currentPlayerId: "player-1",
+        turnStrategy: "fixed",
+        cards,
+      },
+    });
+    await expect(room.submitCommand({ operationId: "redeal", expectedVersion: 0, actorUserId: "host-1", kind: "card.round.start", payload: {} })).resolves.toMatchObject({ ok: true, event: { kind: "card.round_redealt" } });
+    const host = await room.getSnapshotFor({ userId: "host-1", role: "host" });
+    expect(host.chaseScore!.cards!.hands["player-1"]).toHaveLength(2);
+    expect(host.chaseScore!.cards!.hands["player-2"]).toHaveLength(3);
+    const playerA = await room.getSnapshotFor({ userId: "user-a", role: "player" });
+    expect(playerA.chaseScore!.cards!.hands["player-1"]).toHaveLength(2);
+    expect(playerA.chaseScore!.cards!.hands["player-2"]).toHaveLength(0);
+  });
+
+  it("records card commands and hides draw card details from other players", async () => {
+    const room = env.MATCH_ROOM.getByName("match-room-card-commands");
+    const cards = initRoomCards({ playerIds: ["player-1", "player-2"], handSizes: [1, 1], randomIndex: () => 0 });
+    await room.initialize({
+      matchId: crypto.randomUUID(),
+      roomCode: "CMD234",
+      host: { userId: "host-1", nickname: "Host", role: "host", joinedAt: 1 },
+      chaseScore: {
+        mode: "score_cards",
+        players: [
+          { id: "player-1", nickname: "A", userId: "user-a", initialScore: 0, score: 0, active: true },
+          { id: "player-2", nickname: "B", userId: "user-b", initialScore: 0, score: 0, active: true },
+        ],
+        rules: [{ id: "win", label: "普胜", value: 1, kind: "gain", enabled: true }],
+        currentPlayerId: "player-1",
+        turnStrategy: "fixed",
+        cards,
+      },
+    });
+    await room.addMember({ operationId: "join-a", expectedVersion: 0, userId: "user-a", nickname: "A", role: "player", joinedAt: 2 });
+    const card = cards.hands["player-1"][0];
+    await expect(room.submitCommand({
+      operationId: "play-card",
+      expectedVersion: 1,
+      actorUserId: "user-a",
+      kind: "card.play",
+      payload: { playerId: "player-1", instanceId: card.instanceId },
+    })).resolves.toMatchObject({ ok: true, event: { kind: "card.played", payload: { card: { title: card.title } } } });
+
+    await expect(room.submitCommand({
+      operationId: "draw-card",
+      expectedVersion: 2,
+      actorUserId: "host-1",
+      kind: "card.draw",
+      payload: { playerId: "player-2", count: 1 },
+    })).resolves.toMatchObject({ ok: true, event: { kind: "card.drawn" } });
+    const playerA = await room.getSnapshotFor({ userId: "user-a", role: "player" });
+    expect(playerA.events.find((event) => event.kind === "card.played")?.payload.card).toBeTruthy();
+    expect(playerA.events.find((event) => event.kind === "card.drawn")?.payload.card).toBeUndefined();
   });
 
   it("falls back to a bounded current snapshot when a reconnect gap is too large", async () => {
@@ -1174,11 +1286,28 @@ describe("R4 MatchRoom Durable Object", () => {
       "SELECT nickname_snapshot FROM match_players WHERE id = ?1",
     ).bind(seatA).first<string>("nickname_snapshot")).resolves.toBe(claimedPayload.event.payload.nickname);
 
+    // The host can explicitly choose their own seat too.
+    const hostClaimed = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/claim`, {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-host-seat", expectedVersion: afterPayload.snapshot.version, userId: host.userId }),
+    });
+    expect(hostClaimed.status).toBe(200);
+    await expect(hostClaimed.json()).resolves.toMatchObject({ event: { kind: "player.claimed", payload: { playerId: seatB, userId: host.userId, nickname: "claim_host" } } });
+
+    // Bound seats cannot be overwritten or duplicated without a transfer flow.
+    const overwrite = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/claim`, {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-overwrite", expectedVersion: afterPayload.snapshot.version + 1, userId: guest.userId }),
+    });
+    expect(overwrite.status).toBe(400);
+
     // A non-host member cannot claim seats.
     const forbidden = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/claim`, {
       method: "POST",
       headers: { Cookie: guest.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
-      body: JSON.stringify({ operationId: "claim-forbidden", expectedVersion: afterPayload.snapshot.version, userId: guest.userId }),
+      body: JSON.stringify({ operationId: "claim-forbidden", expectedVersion: afterPayload.snapshot.version + 1, userId: guest.userId }),
     });
     expect(forbidden.status).toBe(403);
 
@@ -1506,7 +1635,7 @@ describe("R4 MatchRoom Durable Object", () => {
     expect(body.room.code).toMatch(/^[23456789A-HJ-NP-Z]{6}$/);
     expect(body.host).toMatchObject({ userId: host.userId, role: "host" });
     expect(body.snapshot).toMatchObject({ matchId: body.matchId, roomCode: body.room.code, version: 0 });
-    expect(body.snapshot.members).toEqual([{ userId: host.userId, nickname: "甲", role: "host", joinedAt: expect.any(Number), playerType: "registered" }]);
+    expect(body.snapshot.members).toEqual([{ userId: host.userId, nickname: "direct_host", role: "host", joinedAt: expect.any(Number), playerType: "registered" }]);
     expect(body.snapshot.chaseScore).toMatchObject({
       mode: "score",
       players: [
@@ -1543,7 +1672,7 @@ describe("R4 MatchRoom Durable Object", () => {
       { seat_no: 0, role: "player", user_id: null, nickname_snapshot: "甲" },
       { seat_no: 1, role: "player", user_id: null, nickname_snapshot: "乙" },
       { seat_no: 2, role: "player", user_id: null, nickname_snapshot: "丙" },
-      { seat_no: 3, role: "host", user_id: host.userId, nickname_snapshot: "甲" },
+      { seat_no: 3, role: "host", user_id: host.userId, nickname_snapshot: "direct_host" },
     ]);
   });
 

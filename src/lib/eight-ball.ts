@@ -1,3 +1,7 @@
+import { CardMode, createMatchCardState, MatchCardFilter, MatchCardState, redealMatchCardState } from "./match";
+import { secureRandomIndex } from "./deck";
+import { OfficialDeckId } from "./official-decks";
+
 export type EightBallLayout = "stacked" | "split";
 export type EightBallWinType = "normal" | "break_clear" | "runout";
 export type EightBallServeRule = "alternate" | "winner";
@@ -53,6 +57,7 @@ export interface EightBallMatch {
   location: string;
   note: string;
   events: EightBallEvent[];
+  cards?: MatchCardState;
 }
 
 export interface EightBallDraft {
@@ -64,6 +69,11 @@ export interface EightBallDraft {
   title?: string;
   location?: string;
   note?: string;
+  cardMode?: CardMode;
+  initialHandSize?: number;
+  initialHandSizes?: [number, number];
+  deckId?: OfficialDeckId;
+  cardFilter?: Partial<MatchCardFilter>;
 }
 
 export interface EightBallPlayerStats {
@@ -85,7 +95,7 @@ export interface EffectiveEightBallRound extends EightBallRoundPayload {
 
 const makeId = (prefix: string, now: number) => `${prefix}-${now}-${Math.random().toString(36).slice(2, 9)}`;
 
-export function createEightBallMatch(draft: EightBallDraft, now = Date.now()): EightBallMatch {
+export function createEightBallMatch(draft: EightBallDraft, now = Date.now(), randomIndex = secureRandomIndex): EightBallMatch {
   const names = draft.playerNames.map((name) => name.trim()) as [string, string];
   if (!names[0] || !names[1]) throw new Error("双方姓名不能为空");
   if (draft.raceTo !== null && (!Number.isInteger(draft.raceTo) || draft.raceTo < 1 || draft.raceTo > 99)) throw new Error("抢局数必须为 1–99");
@@ -93,11 +103,22 @@ export function createEightBallMatch(draft: EightBallDraft, now = Date.now()): E
     { id: `match-player-${now}-1`, name: names[0] },
     { id: `match-player-${now}-2`, name: names[1] },
   ];
+  const cards = draft.cardMode && draft.cardMode !== "none"
+    ? createMatchCardState({
+      cardMode: draft.cardMode,
+      handIds: players.map((player) => player.id),
+      initialHandSize: draft.initialHandSize ?? 0,
+      initialHandSizes: draft.initialHandSizes,
+      deckId: draft.deckId,
+      cardFilter: draft.cardFilter,
+    }, randomIndex)
+    : undefined;
   return {
     schemaVersion: 1, id: makeId("eight", now), matchVersion: 0, mode: "chinese_eight", status: "active",
     createdAt: now, startedAt: now, pausedDurationMs: 0, players, raceTo: draft.raceTo,
     firstServerId: players[draft.firstServer].id, serveRule: draft.serveRule, layout: draft.layout,
     title: draft.title?.trim() ?? "", location: draft.location?.trim() ?? "", note: draft.note?.trim() ?? "", events: [],
+    ...(cards ? { cards } : {}),
   };
 }
 
@@ -120,7 +141,8 @@ function validRound(round: EightBallRoundPayload, match: EightBallMatch) {
 export function recordEightBallRound(match: EightBallMatch, input: Omit<EightBallRoundPayload, "confirmedAt">, now = Date.now()): EightBallMatch {
   const round = { ...input, note: input.note.trim(), confirmedAt: now };
   if (match.status !== "active" || match.pausedAt || !validRound(round, match)) return match;
-  return appendEvent(match, { type: "round", occurredAt: now, source: "user", round }, now);
+  const updated = appendEvent(match, { type: "round", occurredAt: now, source: "user", round }, now);
+  return updated.cards ? { ...updated, cards: redealMatchCardState(updated.cards, now + 1) } : updated;
 }
 
 export function correctEightBallRound(match: EightBallMatch, eventId: string, replacement: EightBallRoundPayload | null, now = Date.now()): EightBallMatch {
