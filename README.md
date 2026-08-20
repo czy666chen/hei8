@@ -1,39 +1,65 @@
-# 台球奇招卡牌
+# 台球奇招
 
-当前正式版本：`v5.2.0`，已完成账号、跨设备同步、基于 Durable Objects/WebSocket 的多人实时房间（全屏对局页）与云端战绩删除。
+[![CI](https://github.com/czy666chen/hei8/actions/workflows/ci.yml/badge.svg)](https://github.com/czy666chen/hei8/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/czy666chen/hei8)](https://github.com/czy666chen/hei8/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个无需后端的台球卡牌抽取应用。整副牌包含 50 种规则、51 张实体卡，支持不放回随机抽取、手牌使用、已使用归档，并用 `localStorage` 自动保存本局进度。
+面向台球朋友局的开源 Web 应用，支持中八双人赛、2–8 人追分、奇招牌和基于 Cloudflare Durable Objects/WebSocket 的多人实时房间。当前正式版本为 `v6.0.0`。
+
+## 功能
+
+- 中八逐局计分、赛制与开球规则、战绩导出
+- 多人追分、可配置规则、排名、撤销和统一流水
+- 独立奇招牌、手牌隐私、抽取/使用/跳过与下一轮重发
+- 账号、跨设备同步、云端战绩和实时房间
+- 离线本地存储、深浅主题和移动端布局
+
+## 技术栈
+
+- React 19、Next.js 16、vinext、Vite 8、TypeScript
+- Cloudflare Workers、D1、Durable Objects、WebSocket
+- Vitest、Playwright、ESLint
 
 ## 本地运行
 
 需要 Node.js 22.13 或更高版本。
 
 ```bash
-npm install
+git clone https://github.com/czy666chen/hei8.git
+cd hei8
+npm ci
+cp .dev.vars.example .dev.vars
+npm run db:migrate:local
 npm run dev
 ```
 
-浏览器打开终端显示的本地地址。
+Windows PowerShell 可使用 `Copy-Item .dev.vars.example .dev.vars`。
 
-## 测试与构建
+`.dev.vars` 只能填写开发环境值，禁止复用生产密钥。项目不会提交环境变量、构建产物或本地数据库状态。
 
-```bash
-npm run test
-npm run build
-npm run build:static
-```
-
-`npm run build` 生成 Cloudflare Worker 版本，`npm run build:static` 生成适用于 Vercel 等静态托管平台的 `dist-static`。
-
-Cloudflare Vite 插件会在构建时固定目标环境，因此预览和生产发布必须使用对应脚本：
+## 验证
 
 ```bash
-npm run deploy:preview
-npm run deploy:production
+npm run lint
+npm run test:all
+npm run test:e2e
+npm run build:production
 ```
 
-不要在普通 `npm run build` 之后使用 `wrangler deploy --env production`；生成的部署配置已经在构建阶段展开，事后追加 `--env` 不会把本地绑定切换为生产绑定。
+## 部署
 
-## Vercel 部署
+项目支持 Cloudflare Workers + D1 + Durable Objects。部署自己的实例前，请在 `wrangler.jsonc` 中配置独立 Worker、D1 数据库和环境，并通过 Wrangler 设置以下 secrets：
 
-项目包含 `vercel.json`。在 Vercel 导入 Git 仓库，或在项目根目录运行 Vercel CLI，即可使用静态构建发布。
+- `REGISTRATION_INVITE_CODE`
+- `PASSWORD_HMAC_KEY`
+- `SESSION_HMAC_KEY`
+
+不要复用本项目生产资源或密钥。详细注意事项见 [部署文档](docs/DEPLOYMENT_NOTES.md)。
+
+## 参与贡献
+
+请阅读 [贡献指南](CONTRIBUTING.md)、[行为准则](CODE_OF_CONDUCT.md) 和 [安全政策](SECURITY.md)。功能建议与普通缺陷可提交 Issue；安全漏洞请使用 GitHub 私密漏洞报告。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。

@@ -1,6 +1,16 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "taiqiu-qizhao",
   "version": "6.0.0",
+  "description": "面向台球朋友局的中八、多人追分、奇招牌与实时房间应用",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/czy666chen/hei8.git"
+  },
+  "bugs": {
+    "url": "https://github.com/czy666chen/hei8/issues"
+  },
+  "homepage": "https://github.com/czy666chen/hei8#readme",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
