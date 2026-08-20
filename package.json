@@ -1,6 +1,6 @@
 {
   "name": "site-creator-vinext-starter",
-  "version": "5.0.0-rc.1",
+  "version": "6.0.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,7 +9,11 @@
     "dev": "vinext dev",
     "dev:static": "vite --config vite.static.config.ts",
     "build": "vinext build",
+    "build:preview": "cross-env CLOUDFLARE_ENV=preview vinext build",
+    "build:production": "cross-env CLOUDFLARE_ENV=production vinext build",
     "build:static": "vite build --config vite.static.config.ts",
+    "deploy:preview": "npm run build:preview && wrangler deploy",
+    "deploy:production": "npm run build:production && wrangler deploy",
     "start": "vinext start",
     "test": "vitest run --config vitest.config.ts",
     "test:worker": "cross-env WRANGLER_WRITE_LOGS=false WRANGLER_LOG_PATH=.wrangler/logs XDG_CONFIG_HOME=.wrangler/xdg vitest run --config vitest.worker.config.ts",

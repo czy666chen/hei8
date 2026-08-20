@@ -17,7 +17,7 @@ const lightIds = CARD_DEFINITIONS
   .filter((card) => Number(card.id.slice(-3)) % 2 === 0 && !card.needsReview)
   .map((card) => card.id);
 const safeIds = CARD_DEFINITIONS
-  .filter((card) => !card.needsReview && !card.safetyNote)
+  .filter((card) => !card.needsReview && !card.safetyNote && card.riskLevel !== "medium")
   .map((card) => card.id);
 const competitiveIds = [
   1, 3, 5, 8, 9, 10, 13, 14, 15, 18, 19, 21, 23, 26, 31, 32, 36, 37, 39, 40, 42, 44, 47, 48, 50,
@@ -30,7 +30,7 @@ export const OFFICIAL_DECKS: OfficialDeck[] = [
     name: "完整奇招",
     description: "收录全部规则，适合熟悉玩法的朋友局。",
     difficulty: "标准",
-    safety: "危险动作可随时安全跳过并补抽。",
+    safety: "含身体动作规则",
     definitionIds: allIds,
   },
   {
@@ -39,7 +39,7 @@ export const OFFICIAL_DECKS: OfficialDeck[] = [
     name: "轻量牌组",
     description: "精简规则数量，适合短局和第一次体验。",
     difficulty: "轻松",
-    safety: "已排除待复核内容，仍请遵守卡面安全提示。",
+    safety: "排除待复核内容",
     definitionIds: lightIds,
   },
   {
@@ -57,7 +57,7 @@ export const OFFICIAL_DECKS: OfficialDeck[] = [
     name: "安全牌组",
     description: "排除待复核规则及带身体动作风险提示的卡牌。",
     difficulty: "轻松",
-    safety: "优先使用低风险规则；现场安全始终高于卡牌效果。",
+    safety: "低风险规则",
     definitionIds: safeIds,
   },
 ];

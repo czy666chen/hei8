@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  addDeletedMatch,
   APP_DATA_CODEC,
   APP_STORAGE_KEY,
+  DELETED_MATCHES_KEY,
   EMPTY_APP_DATA,
+  loadDeletedMatchIds,
   MemoryStorageAdapter,
   VersionedLocalStore,
 } from "./local-storage";
@@ -28,5 +31,22 @@ describe("versioned local storage", () => {
       issue: { message: "数据格式或版本无法识别", raw: "{broken" },
     });
     expect(adapter.get(APP_STORAGE_KEY)).toBe("{broken");
+  });
+
+  it("persists deleted-match tombstones that survive reload and are idempotent", () => {
+    const adapter = new MemoryStorageAdapter();
+    const store = new VersionedLocalStore(adapter);
+
+    expect(loadDeletedMatchIds(store)).toEqual([]);
+    expect(addDeletedMatch(store, "match-a")).toEqual(["match-a"]);
+    expect(addDeletedMatch(store, "match-a")).toEqual(["match-a"]);
+    expect(addDeletedMatch(store, "match-b")).toEqual(["match-a", "match-b"]);
+
+    const reloaded = new VersionedLocalStore(new MemoryStorageAdapter({ [DELETED_MATCHES_KEY]: adapter.get(DELETED_MATCHES_KEY) ?? "" }));
+    expect(loadDeletedMatchIds(reloaded)).toEqual(["match-a", "match-b"]);
+
+    const corrupt = new VersionedLocalStore(new MemoryStorageAdapter({ [DELETED_MATCHES_KEY]: "{broken" }));
+    expect(loadDeletedMatchIds(corrupt)).toEqual([]);
+    expect(addDeletedMatch(corrupt, "match-c")).toEqual(["match-c"]);
   });
 });

@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const environment = args.includes("--env") ? args[args.indexOf("--env") + 1] : "";
 const username = args.find((arg, index) => index !== args.indexOf("--env") + 1 && !arg.startsWith("--"))?.trim().toLowerCase() ?? "";
 
-if (!['preview', 'production'].includes(environment) || !/^[a-z0-9_]{4,24}$/.test(username) || RESERVED.has(username)) {
+if (!['preview', 'production'].includes(environment) || !/^[a-z0-9_]{3,24}$/.test(username) || RESERVED.has(username)) {
   console.error("Usage: npm run auth:reset-password -- <username> --env preview|production");
   process.exit(2);
 }

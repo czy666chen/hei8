@@ -85,13 +85,14 @@ function playerNames(matches: (BilliardsMatch | EightBallMatch)[]): string[] {
 
 async function resource(kind: MigrationResourceKind, localId: string, snapshot: unknown): Promise<MigrationResource> {
   const snapshotJson = JSON.stringify(snapshot);
+  const checksum = await sha256(snapshotJson);
   return {
     kind,
     localId,
     resourceId: await stableUuid(`hei8-r3-${kind}`, localId),
-    operationId: await stableUuid("hei8-r3-migration-operation", `${kind}:${localId}`),
+    operationId: await stableUuid("hei8-r3-migration-operation", `${kind}:${localId}:${checksum}`),
     snapshotJson,
-    checksum: await sha256(snapshotJson),
+    checksum,
   };
 }
 

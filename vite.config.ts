@@ -34,9 +34,21 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      watch: {
+        // Atomic editor saves create `*.tmpdir/*.tmp` and `name~XXXX.TMP` files
+        // that Windows file watchers report as EBUSY and crash the dev server;
+        // scratch work files must not be watched either.
+        ignored: [
+          "**/*.tmpdir/**",
+          "**/work/**",
+          "**/*.tmp",
+          "**/*.TMP",
+          "**/*~*",
+        ],
+        ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}),
+      },
+    },
     plugins: [
       vinext(),
       sites(),

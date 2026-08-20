@@ -34,7 +34,7 @@ export const users = sqliteTable(
     check("users_id_uuid_length_ck", sql`length(${table.id}) = 36`),
     check(
       "users_username_format_ck",
-      sql`length(${table.normalizedUsername}) between 4 and 24
+      sql`length(${table.normalizedUsername}) between 3 and 8
           and ${table.normalizedUsername} = lower(${table.normalizedUsername})
           and ${table.normalizedUsername} not glob '*[^a-z0-9_]*'`,
     ),
@@ -317,12 +317,42 @@ export const matchPlayers = sqliteTable(
     nicknameSnapshot: text("nickname_snapshot").notNull(),
     joinedAt: integer("joined_at").notNull().default(sql`(unixepoch() * 1000)`),
     leftAt: integer("left_at"),
+    kickedAt: integer("kicked_at"),
+    kickedByUserId: text("kicked_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+      onUpdate: "cascade",
+    }),
   },
   (table) => [
     uniqueIndex("match_players_match_seat_uq").on(table.matchId, table.seatNo),
     index("match_players_user_match_idx").on(table.userId, table.matchId),
+    index("match_players_match_kicked_idx").on(table.matchId, table.kickedAt),
     check("match_players_seat_ck", sql`${table.seatNo} >= 0`),
     check("match_players_role_ck", sql`${table.role} in ('host', 'player', 'spectator')`),
+  ],
+);
+
+export const realtimeRooms = sqliteTable(
+  "realtime_rooms",
+  {
+    matchId: text("match_id")
+      .primaryKey()
+      .references(() => matches.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    roomCode: text("room_code").notNull(),
+    status: text("status", { enum: ["draft", "active", "completed", "archiving_failed"] })
+      .notNull()
+      .default("draft"),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch() * 1000)`),
+    updatedAt: integer("updated_at").notNull().default(sql`(unixepoch() * 1000)`),
+    archivedAt: integer("archived_at"),
+  },
+  (table) => [
+    uniqueIndex("realtime_rooms_code_uq").on(table.roomCode),
+    index("realtime_rooms_status_updated_idx").on(table.status, table.updatedAt),
+    check(
+      "realtime_rooms_status_ck",
+      sql`${table.status} in ('draft', 'active', 'completed', 'archiving_failed')`,
+    ),
   ],
 );
 
@@ -458,6 +488,27 @@ export const matchClaims = sqliteTable(
     ),
     index("match_claims_player_status_idx").on(table.matchPlayerId, table.status),
     check("match_claims_status_ck", sql`${table.status} in ('pending', 'approved', 'rejected', 'cancelled')`),
+  ],
+);
+
+export const matchUserStates = sqliteTable(
+  "match_user_states",
+  {
+    // Per-user deletion tombstone. No FK to `matches`: the tombstone must
+    // survive the physical deletion of the match row so re-uploads (cross
+    // device, offline re-sync) can never resurrect a deleted record.
+    matchId: text("match_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    deletedAt: integer("deleted_at"),
+    createdAt: integer("created_at").notNull().default(sql`(unixepoch() * 1000)`),
+    updatedAt: integer("updated_at").notNull().default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.matchId, table.userId] }),
+    index("match_user_states_user_deleted_idx").on(table.userId, table.deletedAt),
+    check("match_user_states_deleted_ck", sql`${table.deletedAt} is null or ${table.deletedAt} > 0`),
   ],
 );
 

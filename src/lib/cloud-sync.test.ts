@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { enqueueMigrationResources, flushSyncQueue, retrySyncQueue, SYNC_QUEUE_CODEC } from "./cloud-sync";
+import { enqueueMigrationResources, flushSyncQueue, removeQueuedMatchUploads, retrySyncQueue, SYNC_QUEUE_CODEC } from "./cloud-sync";
 import type { PreparedLocalMigration } from "./local-migration";
 import { CLOUD_LINKS_CODEC, MemoryStorageAdapter, VersionedLocalStore } from "./local-storage";
 
@@ -22,6 +22,34 @@ function migration(): PreparedLocalMigration {
 }
 
 describe("persistent offline sync queue", () => {
+  it("enqueues a changed snapshot even after the same local resource was acknowledged", () => {
+    const store = new VersionedLocalStore(new MemoryStorageAdapter());
+    const first = migration();
+    store.write(CLOUD_LINKS_CODEC, {
+      version: 1,
+      links: {
+        "match:a": {
+          kind: "match",
+          localId: "a",
+          resourceId: "aaaaaaaa-aaaa-5aaa-8aaa-aaaaaaaaaaaa",
+          version: 1,
+          lastSyncedAt: 100,
+          operationId: first.resources[0].operationId,
+        },
+      },
+    });
+    const changed = migration();
+    changed.resources[0] = {
+      ...changed.resources[0],
+      operationId: "cccccccc-cccc-5ccc-8ccc-cccccccccccc",
+      checksum: "c".repeat(64),
+      snapshotJson: JSON.stringify({ id: "a", status: "completed" }),
+    };
+
+    expect(enqueueMigrationResources(store, changed, 200)).toBe(2);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items.map((item) => item.resource.localId)).toContain("a");
+  });
+
   it("enqueues once, confirms in order, and only removes acknowledged items", async () => {
     const store = new VersionedLocalStore(new MemoryStorageAdapter());
     expect(enqueueMigrationResources(store, migration(), 100)).toBe(2);
@@ -54,5 +82,17 @@ describe("persistent offline sync queue", () => {
     await expect(flushSyncQueue(store, { deviceId: crypto.randomUUID(), fetcher: auth, now: 300 }))
       .resolves.toMatchObject({ authRequired: true, remaining: 2 });
     expect(store.read(SYNC_QUEUE_CODEC).value.items[0].state).toBe("auth_required");
+  });
+
+  it("drops queued uploads of a deleted match so it can never be re-synced", () => {
+    const store = new VersionedLocalStore(new MemoryStorageAdapter());
+    enqueueMigrationResources(store, migration(), 100);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items).toHaveLength(2);
+
+    expect(removeQueuedMatchUploads(store, "a")).toBe(1);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items.map((item) => item.resource.localId)).toEqual(["b"]);
+    expect(removeQueuedMatchUploads(store, "a")).toBe(0);
+    expect(removeQueuedMatchUploads(store, "missing")).toBe(0);
+    expect(store.read(SYNC_QUEUE_CODEC).value.items.map((item) => item.resource.localId)).toEqual(["b"]);
   });
 });

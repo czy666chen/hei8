@@ -66,7 +66,7 @@ async function expectCookieStored(cookie: string): Promise<void> {
   expect(found).toBe(1);
 }
 
-async function register(username = "Player_01", password = "secret1"): Promise<Response> {
+async function register(username = "Player01", password = "secret1"): Promise<Response> {
   return post("/api/auth/register", {
     username,
     password,
@@ -77,7 +77,7 @@ async function register(username = "Player_01", password = "secret1"): Promise<R
 describe("R3 authentication HTTP API", () => {
   it("rejects registration with the wrong invite code without storing a user", async () => {
     const response = await post("/api/auth/register", {
-      username: "Player_01",
+      username: "Player01",
       password: "secret1",
       inviteCode: "wrong-code",
     });
@@ -100,9 +100,9 @@ describe("R3 authentication HTTP API", () => {
     const user = await env.DB.prepare(
       "SELECT normalized_username, password_digest FROM users WHERE normalized_username = ?1",
     )
-      .bind("player_01")
+      .bind("player01")
       .first<{ normalized_username: string; password_digest: string }>();
-    expect(user?.normalized_username).toBe("player_01");
+    expect(user?.normalized_username).toBe("player01");
     expect(user?.password_digest).toMatch(/^[a-f0-9]{64}$/);
     expect(user?.password_digest).not.toContain("secret1");
 
@@ -111,16 +111,39 @@ describe("R3 authentication HTTP API", () => {
     expect(cookie).not.toContain(session?.token_digest ?? "missing");
   });
 
+  it("registers a three-character username", async () => {
+    const response = await register("Ab_");
+
+    expect(response.status).toBe(201);
+    await expect(
+      env.DB.prepare("SELECT normalized_username FROM users WHERE normalized_username = ?1")
+        .bind("ab_")
+        .first<string>("normalized_username"),
+    ).resolves.toBe("ab_");
+  });
+
+  it.each([
+    { username: "a", error: "用户名至少 3 位" },
+    { username: "abcdefghi", error: "用户名不能超过 8 位" },
+    { username: "has-dash", error: "用户名仅可包含字母、数字、下划线" },
+    { username: "中文", error: "用户名仅可包含字母、数字、下划线" },
+  ])("rejects invalid registration username $username with a specific message", async ({ username, error }) => {
+    const response = await register(username);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error, field: "username" });
+  });
+
   it("logs in case-insensitively, restores the session, and logs out", async () => {
     await register();
-    const login = await post("/api/auth/login", { username: "PLAYER_01", password: "secret1" });
+    const login = await post("/api/auth/login", { username: "PLAYER01", password: "secret1" });
     expect(login.status).toBe(200);
     const cookie = cookieValue(login);
 
     const me = await SELF.fetch("http://example.com/api/auth/me", { headers: { Cookie: cookie } });
     expect(me.status).toBe(200);
     await expect(me.json()).resolves.toMatchObject({
-      user: { normalizedUsername: "player_01", username: "Player_01" },
+      user: { normalizedUsername: "player01", username: "Player01" },
       session: { authenticated: true },
     });
 
@@ -136,7 +159,7 @@ describe("R3 authentication HTTP API", () => {
   it("uses one generic error for unknown users and wrong passwords", async () => {
     await register();
     const unknown = await post("/api/auth/login", { username: "nobody_1", password: "secret1" });
-    const wrongPassword = await post("/api/auth/login", { username: "player_01", password: "wrong11" });
+    const wrongPassword = await post("/api/auth/login", { username: "player01", password: "wrong11" });
     expect(unknown.status).toBe(401);
     expect(wrongPassword.status).toBe(401);
     await expect(unknown.json()).resolves.toEqual({ error: "用户名或密码错误" });
@@ -147,7 +170,7 @@ describe("R3 authentication HTTP API", () => {
     const registered = await register();
     const firstCookie = cookieValue(registered);
     await expectCookieStored(firstCookie);
-    const secondLogin = await post("/api/auth/login", { username: "player_01", password: "secret1" });
+    const secondLogin = await post("/api/auth/login", { username: "player01", password: "secret1" });
     const secondCookie = cookieValue(secondLogin);
     const firstSessionBeforeChange = await SELF.fetch("http://example.com/api/auth/me", {
       headers: { Cookie: firstCookie },
@@ -168,8 +191,8 @@ describe("R3 authentication HTTP API", () => {
 
     const oldSession = await SELF.fetch("http://example.com/api/auth/me", { headers: { Cookie: secondCookie } });
     await expect(oldSession.json()).resolves.toEqual({ user: null, session: { authenticated: false } });
-    expect((await post("/api/auth/login", { username: "player_01", password: "secret1" })).status).toBe(401);
-    expect((await post("/api/auth/login", { username: "player_01", password: "new-secret-2" })).status).toBe(200);
+    expect((await post("/api/auth/login", { username: "player01", password: "secret1" })).status).toBe(401);
+    expect((await post("/api/auth/login", { username: "player01", password: "new-secret-2" })).status).toBe(200);
   });
 
   it("updates profile fields without changing stable account identifiers", async () => {
@@ -195,7 +218,7 @@ describe("R3 authentication HTTP API", () => {
       user: {
         id: initial.user.id,
         publicCode: initial.user.publicCode,
-        normalizedUsername: "player_01",
+        normalizedUsername: "player01",
         nickname: "新昵称",
         avatarUrl: "https://example.com/avatar.png",
       },
@@ -205,7 +228,7 @@ describe("R3 authentication HTTP API", () => {
   it("keeps at most ten active sessions per account", async () => {
     await register();
     for (let index = 0; index < 12; index += 1) {
-      expect((await post("/api/auth/login", { username: "player_01", password: "secret1" })).status).toBe(200);
+      expect((await post("/api/auth/login", { username: "player01", password: "secret1" })).status).toBe(200);
     }
     await expect(
       env.DB.prepare("SELECT count(*) AS count FROM sessions WHERE revoked_at IS NULL").first<number>("count"),
@@ -216,7 +239,7 @@ describe("R3 authentication HTTP API", () => {
     const response = await SELF.fetch("http://example.com/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
-      body: JSON.stringify({ username: "player_01", password: "secret1" }),
+      body: JSON.stringify({ username: "player01", password: "secret1" }),
     });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "请求来源无效", field: "request" });
@@ -240,9 +263,9 @@ describe("R3 authentication HTTP API", () => {
   it("rate limits repeated login failures without recording passwords", async () => {
     await register();
     for (let index = 0; index < 10; index += 1) {
-      expect((await post("/api/auth/login", { username: "player_01", password: "wrong11" })).status).toBe(401);
+      expect((await post("/api/auth/login", { username: "player01", password: "wrong11" })).status).toBe(401);
     }
-    expect((await post("/api/auth/login", { username: "player_01", password: "wrong11" })).status).toBe(429);
+    expect((await post("/api/auth/login", { username: "player01", password: "wrong11" })).status).toBe(429);
     const auditText = await env.DB.prepare(
       "SELECT group_concat(metadata_json, '') AS metadata FROM auth_audit_events",
     ).first<string>("metadata");
@@ -251,10 +274,10 @@ describe("R3 authentication HTTP API", () => {
   });
 
   it("exports account data and deletes an account only after password confirmation", async () => {
-    const first = await register("export_owner", "secret1");
+    const first = await register("export1", "secret1");
     const firstPayload = await first.clone().json() as { user: { id: string } };
     const firstCookie = cookieValue(first);
-    const second = await register("new_owner", "secret2");
+    const second = await register("newown2", "secret2");
     const secondPayload = await second.json() as { user: { id: string } };
     const matchId = crypto.randomUUID();
     const ownerPlayerId = crypto.randomUUID();

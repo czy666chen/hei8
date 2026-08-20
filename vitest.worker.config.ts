@@ -18,6 +18,9 @@ export default defineConfig({
         compatibilityDate: "2026-08-11",
         compatibilityFlags: ["nodejs_compat"],
         d1Databases: ["DB"],
+        durableObjects: {
+          MATCH_ROOM: { className: "MatchRoom", useSQLite: true },
+        },
         bindings: {
           APP_ENV: "test",
           REGISTRATION_INVITE_CODE: "replace-with-test-invite-code",

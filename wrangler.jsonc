@@ -16,6 +16,14 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "durable_objects": {
+    "bindings": [
+      { "name": "MATCH_ROOM", "class_name": "MatchRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "r4-v1", "new_sqlite_classes": ["MatchRoom"] }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -30,6 +38,14 @@
   "env": {
     "local": {
       "name": "hei8-r3-local",
+      "durable_objects": {
+        "bindings": [
+          { "name": "MATCH_ROOM", "class_name": "MatchRoom" }
+        ]
+      },
+      "migrations": [
+        { "tag": "r4-v1", "new_sqlite_classes": ["MatchRoom"] }
+      ],
       "images": {
         "binding": "IMAGES"
       },
@@ -51,6 +67,14 @@
     },
     "preview": {
       "name": "hei8-r3-preview",
+      "durable_objects": {
+        "bindings": [
+          { "name": "MATCH_ROOM", "class_name": "MatchRoom" }
+        ]
+      },
+      "migrations": [
+        { "tag": "r4-v1", "new_sqlite_classes": ["MatchRoom"] }
+      ],
       "triggers": { "crons": ["17 3 * * *"] },
       "images": {
         "binding": "IMAGES"
@@ -72,7 +96,15 @@
       }
     },
     "production": {
-      "name": "hei8-r3-production",
+      "name": "taiqiu-qizhao-cards",
+      "durable_objects": {
+        "bindings": [
+          { "name": "MATCH_ROOM", "class_name": "MatchRoom" }
+        ]
+      },
+      "migrations": [
+        { "tag": "r4-v1", "new_sqlite_classes": ["MatchRoom"] }
+      ],
       "triggers": { "crons": ["17 3 * * *"] },
       "images": {
         "binding": "IMAGES"
@@ -84,8 +116,8 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "hei8-r3-production",
-          "database_id": "37ecaa17-41a2-4ca6-ab4f-9d37b0bdb5d4",
+          "database_name": "hei8-r3-production-v2",
+          "database_id": "ad7e159b-695c-4327-a86d-5fb5dc55b330",
           "migrations_dir": "./migrations"
         }
       ],

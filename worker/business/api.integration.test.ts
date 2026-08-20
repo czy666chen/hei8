@@ -16,6 +16,7 @@ declare global {
 }
 
 type Account = { id: string; cookie: string };
+let registrationSequence = 0;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, __D1_MIGRATIONS__);
@@ -28,6 +29,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM match_audit_events"),
     env.DB.prepare("DELETE FROM match_claims"),
     env.DB.prepare("DELETE FROM sync_receipts"),
+    env.DB.prepare("DELETE FROM match_user_states"),
+    env.DB.prepare("DELETE FROM realtime_rooms"),
     env.DB.prepare("DELETE FROM match_players"),
     env.DB.prepare("DELETE FROM matches"),
     env.DB.prepare("DELETE FROM deck_cards"),
@@ -47,10 +50,12 @@ function cookieValue(response: Response): string {
 }
 
 async function register(username: string): Promise<Account> {
+  registrationSequence += 1;
+  const compactUsername = `u${registrationSequence.toString(36).padStart(7, "0")}`;
   const response = await SELF.fetch("http://example.com/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: "http://example.com" },
-    body: JSON.stringify({ username, password: "secret1", inviteCode: "replace-with-test-invite-code" }),
+    body: JSON.stringify({ username: compactUsername, nickname: username, password: "secret1", inviteCode: "replace-with-test-invite-code" }),
   });
   expect(response.status).toBe(201);
   const payload = await response.clone().json() as { user: { id: string } };
@@ -201,6 +206,37 @@ describe("R3 business authorization and cloud APIs", () => {
     expect(restored.players.map((player) => player.nickname_snapshot)).toEqual(["红方", "蓝方"]);
   });
 
+  it("propagates completion to another device and never lets a stale active snapshot reopen it", async () => {
+    const account = await register("two_device_sync");
+    const sourceDevice = await device(account, "finisher-device");
+    const readerDevice = await device(account, "reader-device");
+    const localId = "shared-eight-match";
+    const resourceId = "55555555-5555-5555-8555-555555555555";
+    const sendSnapshot = async (deviceId: string, operationId: string, snapshot: Record<string, unknown>) => {
+      const snapshotJson = JSON.stringify(snapshot);
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(snapshotJson));
+      const checksum = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      return write("/api/migrations/local", account.cookie, {
+        batchId: checksum,
+        deviceId,
+        item: { kind: "match", localId, resourceId, operationId, snapshotJson, checksum },
+      });
+    };
+    const base = {
+      id: localId, schemaVersion: 1, mode: "chinese_eight", createdAt: 100, startedAt: 110,
+      players: [{ id: "red", name: "红方" }, { id: "blue", name: "蓝方" }], events: [],
+    };
+    expect((await sendSnapshot(sourceDevice, "66666666-6666-5666-8666-666666666661", { ...base, matchVersion: 1, status: "active" })).status).toBe(201);
+    expect((await sendSnapshot(sourceDevice, "66666666-6666-5666-8666-666666666662", { ...base, matchVersion: 2, status: "completed", endedAt: 500 })).status).toBe(201);
+    expect((await sendSnapshot(readerDevice, "66666666-6666-5666-8666-666666666663", { ...base, matchVersion: 1, status: "active" })).status).toBe(201);
+
+    const history = await (await api("/api/history", account.cookie)).json() as { matches: { id: string; status: string }[] };
+    const row = history.matches.find((match) => match.status === "completed");
+    expect(row).toBeTruthy();
+    const detail = await (await api(`/api/matches/${row!.id}`, account.cookie)).json() as { match: { snapshot_json: string } };
+    expect(JSON.parse(detail.match.snapshot_json)).toMatchObject({ status: "completed", endedAt: 500, matchVersion: 2 });
+  });
+
   it("allows a participant to read a match but only the leased owner device to write", async () => {
     const a = await register("account_a");
     const b = await register("account_b");
@@ -347,5 +383,191 @@ describe("R3 business authorization and cloud APIs", () => {
       "EXPLAIN QUERY PLAN SELECT id FROM score_events WHERE match_id = ?1 ORDER BY sequence_no",
     ).bind(crypto.randomUUID()).all<{ detail: string }>();
     expect(matchDetailPlan.results.some((row) => row.detail.includes("score_events_match_sequence_uq"))).toBe(true);
+  });
+});
+
+describe("R5.2 match deletion", () => {
+  async function seedMatch(owner: Account, options: { participant?: Account; spectator?: Account; status?: "completed" | "active"; room?: boolean } = {}): Promise<string> {
+    const matchId = crypto.randomUUID();
+    const now = Date.now();
+    const completed = (options.status ?? "completed") === "completed";
+    const statements: D1PreparedStatement[] = [
+      env.DB.prepare(
+        `INSERT INTO matches (id, owner_user_id, mode, status, privacy, version, created_at, updated_at, ended_at)
+         VALUES (?1, ?2, 'score', ?3, 'private', 0, ?4, ?4, ?5)`,
+      ).bind(matchId, owner.id, options.status ?? "completed", now, completed ? now : null),
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, user_id, role, nickname_snapshot, joined_at) VALUES (?1, ?2, 0, ?3, 'host', '房主', ?4)",
+      ).bind(crypto.randomUUID(), matchId, owner.id, now),
+    ];
+    if (options.participant) {
+      statements.push(env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, user_id, role, nickname_snapshot, joined_at) VALUES (?1, ?2, 1, ?3, 'player', '参与者', ?4)",
+      ).bind(crypto.randomUUID(), matchId, options.participant.id, now));
+    }
+    if (options.spectator) {
+      statements.push(env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, user_id, role, nickname_snapshot, joined_at) VALUES (?1, ?2, 2, ?3, 'spectator', '观战者', ?4)",
+      ).bind(crypto.randomUUID(), matchId, options.spectator.id, now));
+    }
+    if (options.room) {
+      statements.push(env.DB.prepare(
+        "INSERT INTO realtime_rooms (match_id, room_code, status, created_at, updated_at) VALUES (?1, ?2, 'active', ?3, ?3)",
+      ).bind(matchId, "AB12CD", now));
+    }
+    await env.DB.batch(statements);
+    return matchId;
+  }
+
+  function del(path: string, cookie: string): Promise<Response> {
+    return api(path, cookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", Origin: "http://example.com" },
+      body: "{}",
+    });
+  }
+
+  it("requires a session and hides other accounts' matches", async () => {
+    const a = await register("del_owner_a");
+    const b = await register("del_owner_b");
+    const matchId = await seedMatch(a);
+
+    expect((await api(`/api/matches/${matchId}`, undefined, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", Origin: "http://example.com" },
+      body: "{}",
+    })).status).toBe(401);
+    expect((await del(`/api/matches/${matchId}`, b.cookie)).status).toBe(404);
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(matchId).first<number>("count"))
+      .resolves.toBe(1);
+  });
+
+  it("physically deletes a personal completed match and repeats idempotently", async () => {
+    const a = await register("del_personal");
+    const matchId = await seedMatch(a);
+
+    const first = await del(`/api/matches/${matchId}`, a.cookie);
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({ deleted: true, matchId, physical: true });
+
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(matchId).first<number>("count"))
+      .resolves.toBe(0);
+    await expect(env.DB.prepare("SELECT deleted_at FROM match_user_states WHERE match_id = ?1 AND user_id = ?2")
+      .bind(matchId, a.id).first<number>("deleted_at")).resolves.toBeGreaterThan(0);
+
+    const repeat = await del(`/api/matches/${matchId}`, a.cookie);
+    expect(repeat.status).toBe(200);
+    await expect(repeat.json()).resolves.toMatchObject({ deleted: true, alreadyDeleted: true });
+    await expect((await api("/api/history", a.cookie)).json()).resolves.toEqual({ matches: [] });
+  });
+
+  it("rejects deleting an in-progress match or one with a live realtime room", async () => {
+    const a = await register("del_active");
+    const activeId = await seedMatch(a, { status: "active" });
+    expect((await del(`/api/matches/${activeId}`, a.cookie)).status).toBe(409);
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(activeId).first<number>("count"))
+      .resolves.toBe(1);
+
+    const roomId = await seedMatch(a, { room: true });
+    expect((await del(`/api/matches/${roomId}`, a.cookie)).status).toBe(409);
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(roomId).first<number>("count"))
+      .resolves.toBe(1);
+  });
+
+  it("keeps shared matches for other participants and hides them from the deleter", async () => {
+    const a = await register("del_shared_owner");
+    const b = await register("del_shared_partner");
+    const matchId = await seedMatch(a, { participant: b });
+
+    const first = await del(`/api/matches/${matchId}`, a.cookie);
+    await expect(first.json()).resolves.toMatchObject({ deleted: true, physical: false });
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(matchId).first<number>("count"))
+      .resolves.toBe(1);
+
+    const aHistory = await (await api("/api/history", a.cookie)).json() as { matches: { id: string }[] };
+    expect(aHistory.matches.map((row) => row.id)).not.toContain(matchId);
+    const bHistory = await (await api("/api/history", b.cookie)).json() as { matches: { id: string }[] };
+    expect(bHistory.matches.map((row) => row.id)).toContain(matchId);
+
+    expect((await api(`/api/matches/${matchId}`, a.cookie)).status).toBe(404);
+    expect((await api(`/api/matches/${matchId}`, b.cookie)).status).toBe(200);
+  });
+
+  it("lets a participant delete their own view without affecting the owner", async () => {
+    const a = await register("del_part_owner");
+    const b = await register("del_part_member");
+    const matchId = await seedMatch(a, { participant: b });
+
+    const first = await del(`/api/matches/${matchId}`, b.cookie);
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({ deleted: true, physical: false });
+
+    const aHistory = await (await api("/api/history", a.cookie)).json() as { matches: { id: string }[] };
+    expect(aHistory.matches.map((row) => row.id)).toContain(matchId);
+    const bHistory = await (await api("/api/history", b.cookie)).json() as { matches: { id: string }[] };
+    expect(bHistory.matches.map((row) => row.id)).not.toContain(matchId);
+  });
+
+  it("physically deletes a shared match once every participant has deleted it", async () => {
+    const a = await register("del_all_owner");
+    const b = await register("del_all_member");
+    const matchId = await seedMatch(a, { participant: b });
+
+    await expect((await del(`/api/matches/${matchId}`, b.cookie)).json()).resolves.toMatchObject({ physical: false });
+    const ownerDelete = await del(`/api/matches/${matchId}`, a.cookie);
+    expect(ownerDelete.status).toBe(200);
+    await expect(ownerDelete.json()).resolves.toMatchObject({ deleted: true, physical: true });
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(matchId).first<number>("count"))
+      .resolves.toBe(0);
+  });
+
+  it("does not let spectators delete a match", async () => {
+    const a = await register("del_spect_owner");
+    const s = await register("del_spectator");
+    const matchId = await seedMatch(a, { spectator: s });
+
+    expect((await del(`/api/matches/${matchId}`, s.cookie)).status).toBe(403);
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(matchId).first<number>("count"))
+      .resolves.toBe(1);
+  });
+
+  it("acknowledges re-uploads of a deleted match without recreating it", async () => {
+    const a = await register("del_uploader");
+    const deviceA = await device(a, "del-upload-device");
+    const clientResourceId = "99999999-9999-5999-8999-999999999999";
+    const snapshotJson = JSON.stringify({
+      id: "local-match-1", mode: "score", status: "completed",
+      createdAt: Date.now(), startedAt: Date.now(), endedAt: Date.now(),
+      players: [{ id: "p1", name: "A" }],
+    });
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(snapshotJson));
+    const checksum = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const body = {
+      batchId: "d".repeat(64),
+      deviceId: deviceA,
+      item: { kind: "match", localId: "local-match-1", resourceId: clientResourceId, operationId: crypto.randomUUID(), snapshotJson, checksum },
+    };
+
+    const accepted = await write("/api/migrations/local", a.cookie, body);
+    expect(accepted.status).toBe(201);
+    const uploaded = await accepted.json() as { resourceId: string };
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(uploaded.resourceId).first<number>("count"))
+      .resolves.toBe(1);
+
+    const removed = await del(`/api/matches/${uploaded.resourceId}`, a.cookie);
+    expect(removed.status).toBe(200);
+    await expect(removed.json()).resolves.toMatchObject({ deleted: true, physical: true });
+
+    const reupload = await write("/api/migrations/local", a.cookie, { ...body, item: { ...body.item, operationId: crypto.randomUUID() } });
+    expect(reupload.status).toBe(200);
+    await expect(reupload.json()).resolves.toMatchObject({ result: "accepted", deleted: true, resourceId: uploaded.resourceId });
+    await expect(env.DB.prepare("SELECT count(*) AS count FROM matches WHERE id = ?1").bind(uploaded.resourceId).first<number>("count"))
+      .resolves.toBe(0);
+
+    const b = await register("del_uploader_b");
+    const deviceB = await device(b, "del-upload-device-b");
+    const other = await write("/api/migrations/local", b.cookie, { ...body, deviceId: deviceB, item: { ...body.item, operationId: crypto.randomUUID() } });
+    expect(other.status).toBe(201);
+    await expect(other.json()).resolves.toMatchObject({ result: "accepted" });
   });
 });

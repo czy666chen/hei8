@@ -4,6 +4,7 @@ import {
   digestPassword,
   normalizeUsername,
   parseSessionCookie,
+  validateRegistrationUsername,
   validatePassword,
   verifySecret,
 } from "../../worker/auth/core";
@@ -16,12 +17,28 @@ describe("R3 authentication rules", () => {
     });
   });
 
-  it.each(["abc", "has-dash", "中文名", "admin", "ROOT", "support"])(
+  it("accepts a three-character username", () => {
+    expect(normalizeUsername("Ab_")).toEqual({ normalized: "ab_", display: "Ab_" });
+  });
+
+  it("accepts a two-character username and keeps legacy normalization compatible", () => {
+    expect(normalizeUsername("A1")).toEqual({ normalized: "a1", display: "A1" });
+    expect(normalizeUsername("legacy_name")).toEqual({ normalized: "legacy_name", display: "legacy_name" });
+  });
+
+  it.each(["a", "has-dash", "中文名", "admin", "ROOT", "support"])(
     "rejects the invalid or reserved username %s",
     (username) => {
       expect(() => normalizeUsername(username)).toThrow(AuthValidationError);
     },
   );
+
+  it("uses specific registration username validation messages", () => {
+    expect(() => validateRegistrationUsername("A1")).toThrow("用户名至少 3 位");
+    expect(() => validateRegistrationUsername("a")).toThrow("用户名至少 3 位");
+    expect(() => validateRegistrationUsername("abcdefghi")).toThrow("用户名不能超过 8 位");
+    expect(() => validateRegistrationUsername("has dash")).toThrow("用户名仅可包含字母、数字、下划线");
+  });
 
   it("enforces the documented password length", () => {
     expect(() => validatePassword("12345")).toThrow(AuthValidationError);
