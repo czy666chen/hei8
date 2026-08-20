@@ -1,3 +1,5 @@
+import { registrationUsernameError } from "../../src/lib/username-rules";
+
 const encoder = new TextEncoder();
 const RESERVED_USERNAMES = new Set([
   "admin",
@@ -11,7 +13,6 @@ const RESERVED_USERNAMES = new Set([
 ]);
 
 export const SESSION_COOKIE_NAME = "hei8_session";
-
 export class AuthValidationError extends Error {
   constructor(
     message: string,
@@ -29,7 +30,23 @@ export function normalizeUsername(input: unknown): { normalized: string; display
 
   const display = input.trim();
   const normalized = display.toLowerCase();
-  if (!/^[a-z0-9_]{3,24}$/.test(normalized) || RESERVED_USERNAMES.has(normalized)) {
+  if (!/^[a-z0-9_]{2,24}$/.test(normalized) || RESERVED_USERNAMES.has(normalized)) {
+    throw new AuthValidationError("用户名格式无效", "username");
+  }
+
+  return { normalized, display };
+}
+
+export function validateRegistrationUsername(input: unknown): { normalized: string; display: string } {
+  if (typeof input !== "string") {
+    throw new AuthValidationError("用户名格式无效", "username");
+  }
+
+  const display = input.trim();
+  const normalized = display.toLowerCase();
+  const formatError = registrationUsernameError(display);
+  if (formatError) throw new AuthValidationError(formatError, "username");
+  if (RESERVED_USERNAMES.has(normalized)) {
     throw new AuthValidationError("用户名格式无效", "username");
   }
 

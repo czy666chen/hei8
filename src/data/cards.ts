@@ -4,6 +4,7 @@ export interface CardDefinition {
   effect: string;
   count: number;
   needsReview?: boolean;
+  riskLevel?: "medium";
   safetyNote?: string;
 }
 
@@ -14,7 +15,7 @@ const SOCIAL_PATTERN = /红包|朋友圈|红牛|夸奖|问一句|掰手腕|场�
 const STRATEGY_PATTERN = /球权|自由球|开球权|花色球|目标球|进球袋口|黑8|移除|贴库|连杆|犯规|反弹|无效/;
 
 export function getCardCategory(cardDefinition: CardDefinition): CardCategory {
-  if (cardDefinition.safetyNote) return "physical";
+  if (cardDefinition.safetyNote || cardDefinition.riskLevel === "medium") return "physical";
   if (SOCIAL_PATTERN.test(`${cardDefinition.title}${cardDefinition.effect}`)) return "social";
   if (STRATEGY_PATTERN.test(`${cardDefinition.title}${cardDefinition.effect}`)) return "strategy";
   return "chaos";
@@ -22,7 +23,7 @@ export function getCardCategory(cardDefinition: CardDefinition): CardCategory {
 
 export function getCardSafetyLevel(cardDefinition: CardDefinition): CardSafetyLevel {
   if (cardDefinition.needsReview) return "review";
-  if (cardDefinition.safetyNote) return "medium";
+  if (cardDefinition.safetyNote || cardDefinition.riskLevel === "medium") return "medium";
   return "low";
 }
 
@@ -33,12 +34,14 @@ const card = (
   count = 1,
   needsReview = false,
   safetyNote?: string,
+  riskLevel?: "medium",
 ): CardDefinition => ({
   id: `card-${String(id).padStart(3, "0")}`,
   title,
   effect,
   count,
   ...(needsReview ? { needsReview } : {}),
+  ...(riskLevel ? { riskLevel } : {}),
   ...(safetyNote ? { safetyNote } : {}),
 });
 
@@ -64,7 +67,7 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
   card(19,"祸不单行","对手下一杆白球必须先碰撞单数球；犯规则己方获得自由球。"),
   card(20,"金鸡独立","对手下一杆必须以单腿站立的方式完成击打。",1,false,"请先确认站立稳定，避免在湿滑地面或身体不适时尝试。"),
   card(21,"恶魔契约","分球后移除己方所有花色球，只留黑8；但打不进时，对方可移除一颗花色球并获得线上自由。当对手只剩黑8时，直接获胜。"),
-  card(22,"杰克船长","对手下一杆击球只能用一只眼睛瞄准和击打。",1,false,"视野受限时请放慢动作，并确认球杆周围没有他人。"),
+  card(22,"杰克船长","对手下一杆击球只能用一只眼睛瞄准和击打。",1,false,undefined,"medium"),
   card(23,"双喜临门","对手下一杆白球必须先碰撞双数球；犯规则己方获得自由球。"),
   card(24,"杨过大侠","对手下一杆必须单手持杆击球，不可使用手架和架杆。",1,false,"单手击球更难控制球杆，请降低力度并保持安全距离。"),
   card(25,"天黑喽","对手下一杆瞄准后，须紧闭双眼完成击打。",1,false,"闭眼击球存在碰撞风险，仅在确认周围无人且双方同意时尝试。"),

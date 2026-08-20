@@ -12,7 +12,10 @@ export type ChaseScoreRule = {
 
 export type ChaseScorePlayer = {
   id: string;
+  /** 显示名（displayName）：P1 绑定注册成员后为注册昵称快照。 */
   nickname: string;
+  /** P1：绑定的注册成员 userId（未绑定为 undefined）。 */
+  userId?: string;
   initialScore: number;
   score: number;
   active: boolean;

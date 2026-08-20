@@ -40,6 +40,10 @@ test("R2.5 中八建局、逐局录入、布局切换、恢复与战绩导出", 
   await expect(page.getByText("计分板布局", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("option", { name: "上下二等分" })).toHaveCount(0);
   await expect(page.getByRole("option", { name: "左右二等分" })).toHaveCount(0);
+  await expect(page.locator(".setup-section").filter({ has: page.getByText("02") })).toContainText("赛制");
+  await expect(page.locator(".setup-section").filter({ has: page.getByText("02") })).not.toContainText("先开球");
+  await expect(page.locator(".setup-section").filter({ has: page.getByText("03") })).toContainText("先开球（选填）");
+  await expect(page.locator(".setup-section").filter({ has: page.getByText("03") })).toContainText("后续开球（选填）");
   await page.getByLabel("中八玩家 1 姓名").fill("阿杰");
   await page.getByLabel("中八玩家 2 姓名").fill("老王");
   await page.getByRole("button", { name: /确认并开始/ }).click();

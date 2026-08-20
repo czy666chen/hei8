@@ -34,7 +34,7 @@ export const users = sqliteTable(
     check("users_id_uuid_length_ck", sql`length(${table.id}) = 36`),
     check(
       "users_username_format_ck",
-      sql`length(${table.normalizedUsername}) between 3 and 24
+      sql`length(${table.normalizedUsername}) between 2 and 8
           and ${table.normalizedUsername} = lower(${table.normalizedUsername})
           and ${table.normalizedUsername} not glob '*[^a-z0-9_]*'`,
     ),

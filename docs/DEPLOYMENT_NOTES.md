@@ -164,3 +164,8 @@ curl -i https://<worker>.<subdomain>.workers.dev/api/history
 - D1 无待应用迁移（`wrangler d1 migrations list` 显示 No migrations to apply），生产 secrets 未改动。
 - 部署后验证：`/api/health` 返回 `{"status":"ok","database":"ok"}`；首页 200；部署 bundle 含 `5.2.0` 与全屏房间路由、不含旧 `.realtime-room-panel`；无 Cookie 访问 `/api/history` 返回 401。
 - 待办：15 客户端容量与 D1/DO 用量验证（B4）、真人双设备实时回归。
+
+### 变更记录（2026-08-20）
+
+- GitHub 发布 v5.3.0：注册用户名规则收敛、实时房间成员/席位昵称处理、中八设置页开球规则移入比赛资料。
+- 本次仅发布至 GitHub（分支 `codex/friends-match-v2` + 标签 `v5.3.0`）；未执行 Cloudflare 生产部署，生产 Worker 与 D1 不变。

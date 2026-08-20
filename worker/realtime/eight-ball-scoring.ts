@@ -3,7 +3,13 @@ import type { JsonObject, JsonValue } from "./chase-scoring";
 export type EightBallWinType = "normal" | "break_clear" | "runout";
 export type EightBallServeRule = "alternate" | "winner";
 
-export type RealtimeEightBallPlayer = { id: string; nickname: string };
+export type RealtimeEightBallPlayer = {
+  id: string;
+  /** 显示名（displayName）：P1 绑定注册成员后为注册昵称快照。 */
+  nickname: string;
+  /** P1：绑定的注册成员 userId（未绑定为 undefined）。 */
+  userId?: string;
+};
 export type RealtimeEightBallStats = { score: number; normal: number; breakClear: number; runout: number; fouls: number };
 export type RealtimeEightBallRound = {
   roundId: string;

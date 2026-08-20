@@ -240,6 +240,46 @@ function directDraftBaseline(draft: DirectDraft, playerIds: string[], now: numbe
   });
 }
 
+function firstPlayerName(chaseScore: ChaseScoreState | undefined, eightBall: RealtimeEightBallState | undefined, draft: DirectDraft | undefined, fallback: string): string {
+  return chaseScore?.players[0]?.nickname
+    ?? eightBall?.players[0]?.nickname
+    ?? draft?.players[0]?.name
+    ?? fallback;
+}
+
+async function convergePlayerName(env: RealtimeEnv, matchId: string, playerId: string, nickname: string): Promise<boolean> {
+  try {
+    await env.DB.prepare(
+      "UPDATE match_players SET nickname_snapshot = ?1 WHERE id = ?2 AND match_id = ?3",
+    ).bind(nickname, playerId, matchId).run();
+    const row = await env.DB.prepare(
+      "SELECT snapshot_json FROM matches WHERE id = ?1",
+    ).bind(matchId).first<{ snapshot_json: string | null }>();
+    if (row?.snapshot_json) {
+      const snapshot: unknown = JSON.parse(row.snapshot_json);
+      if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
+        const record = snapshot as Record<string, unknown>;
+        const players = Array.isArray(record.players) ? record.players : [];
+        const rows = await env.DB.prepare(
+          "SELECT id FROM match_players WHERE match_id = ?1 AND role != 'spectator' ORDER BY seat_no",
+        ).bind(matchId).all<{ id: string }>();
+        const playerIndex = rows.results.slice(0, players.length).findIndex((player) => player.id === playerId);
+        const nextPlayers = players.map((player, index) => {
+          if (!player || typeof player !== "object" || Array.isArray(player)) return player;
+          const item = player as Record<string, unknown>;
+          return item.id === playerId || index === playerIndex ? { ...item, name: nickname } : item;
+        });
+        await env.DB.prepare(
+          "UPDATE matches SET snapshot_json = ?1, updated_at = ?2 WHERE id = ?3",
+        ).bind(JSON.stringify({ ...record, players: nextPlayers }), Date.now(), matchId).run();
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function commandResponse(result: RoomCommandResult, successStatus = 200): Response {
   if (result.ok) return json(result, result.duplicate ? 200 : successStatus);
   if (result.code === "forbidden") return json({ error: "无权执行此房间操作" }, 403);
@@ -383,7 +423,7 @@ async function ensureHostPlayer(env: RealtimeEnv, matchId: string, userId: strin
     "SELECT id FROM match_players WHERE match_id = ?1 AND user_id = ?2 AND left_at IS NULL LIMIT 1",
   ).bind(matchId, userId).first<string>("id");
   if (hostPlayer) {
-    await env.DB.prepare("UPDATE match_players SET role = 'host' WHERE id = ?1").bind(hostPlayer).run();
+    await env.DB.prepare("UPDATE match_players SET role = 'host', nickname_snapshot = ?2 WHERE id = ?1").bind(hostPlayer, nickname).run();
     return;
   }
   const seatNo = await env.DB.prepare(
@@ -418,12 +458,13 @@ async function createRoom(request: Request, env: RealtimeEnv, context: RealtimeR
       loadChaseScoreState(env, matchId),
       loadEightBallState(env, matchId),
     ]);
-    await ensureHostPlayer(env, matchId, session.user.id, session.user.nickname, now);
+    const hostNickname = firstPlayerName(chaseScore, eightBall, undefined, session.user.nickname);
+    await ensureHostPlayer(env, matchId, session.user.id, hostNickname, now);
     context.stage = "initialize_do";
     const snapshot = await initializeRoomWithRetry(env.MATCH_ROOM.getByName(matchId), {
       matchId,
       roomCode: existing.room_code,
-      host: { userId: session.user.id, nickname: session.user.nickname, role: "host", joinedAt: now },
+      host: { userId: session.user.id, nickname: hostNickname, role: "host", joinedAt: now },
       chaseScore,
       eightBall,
     }, context);
@@ -454,13 +495,14 @@ async function createRoom(request: Request, env: RealtimeEnv, context: RealtimeR
     loadChaseScoreState(env, matchId),
     loadEightBallState(env, matchId),
   ]);
-  await ensureHostPlayer(env, matchId, session.user.id, session.user.nickname, now);
+  const hostNickname = firstPlayerName(chaseScore, eightBall, undefined, session.user.nickname);
+  await ensureHostPlayer(env, matchId, session.user.id, hostNickname, now);
 
   context.stage = "initialize_do";
   const snapshot = await initializeRoomWithRetry(env.MATCH_ROOM.getByName(matchId), {
     matchId,
     roomCode,
-    host: { userId: session.user.id, nickname: session.user.nickname, role: "host", joinedAt: now },
+    host: { userId: session.user.id, nickname: hostNickname, role: "host", joinedAt: now },
     chaseScore,
     eightBall,
   }, context);
@@ -482,16 +524,17 @@ async function createDirectRoom(request: Request, env: RealtimeEnv, context: Rea
     "SELECT id, mode, status FROM matches WHERE id = ?1 AND owner_user_id = ?2",
   ).bind(matchId, session.user.id).first<{ id: string; mode: string; status: string }>();
   const now = Date.now();
-  const host = { userId: session.user.id, nickname: session.user.nickname, role: "host" as const, joinedAt: now };
 
   const converge = async (roomCode: string, reused: boolean): Promise<Response> => {
     context.stage = "project_host";
-    await ensureHostPlayer(env, matchId, session.user.id, session.user.nickname, now);
-    context.stage = "initialize_do";
     const [chaseScore, eightBall] = await Promise.all([
       loadChaseScoreState(env, matchId),
       loadEightBallState(env, matchId),
     ]);
+    const hostNickname = firstPlayerName(chaseScore, eightBall, draft, session.user.nickname);
+    const host = { userId: session.user.id, nickname: hostNickname, role: "host" as const, joinedAt: now };
+    await ensureHostPlayer(env, matchId, session.user.id, hostNickname, now);
+    context.stage = "initialize_do";
     const snapshot = await initializeRoomWithRetry(env.MATCH_ROOM.getByName(matchId), {
       matchId,
       roomCode,
@@ -536,7 +579,7 @@ async function createDirectRoom(request: Request, env: RealtimeEnv, context: Rea
   statements.push(env.DB.prepare(
     `INSERT INTO match_players (id, match_id, seat_no, user_id, role, nickname_snapshot, joined_at)
      VALUES (?1, ?2, ?3, ?4, 'host', ?5, ?6)`,
-  ).bind(crypto.randomUUID(), matchId, draft.players.length, session.user.id, session.user.nickname, now));
+  ).bind(crypto.randomUUID(), matchId, draft.players.length, session.user.id, draft.players[0].name, now));
 
   try {
     await env.DB.batch(statements);
@@ -821,6 +864,92 @@ async function removePlayer(
   return commandResponse(result);
 }
 
+async function claimSeat(
+  request: Request,
+  env: RealtimeEnv,
+  roomCode: string,
+  playerId: string,
+): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const requestOperationId = operationId(body.operationId);
+  const version = expectedVersion(body.expectedVersion);
+  const targetUserId = uuid(body.userId, "userId");
+  const room = await env.DB.prepare(
+    "SELECT rr.match_id, m.owner_user_id FROM realtime_rooms rr JOIN matches m ON m.id = rr.match_id WHERE rr.room_code = ?1",
+  ).bind(roomCode).first<{ match_id: string; owner_user_id: string }>();
+  if (!room) return json({ error: "房间不存在" }, 404);
+  if (room.owner_user_id !== session.user.id) return json({ error: "只有房主可以把席位绑定到成员" }, 403);
+
+  const result = await env.MATCH_ROOM.getByName(room.match_id).claimSeat({
+    operationId: requestOperationId,
+    expectedVersion: version,
+    actorUserId: session.user.id,
+    playerId,
+    targetUserId,
+  });
+  if (!result.ok) return commandResponse(result);
+
+  // Converge the D1 seat projection: persist the claimed display name so the
+  // archived record and any D1-based rebuild keep the registered nickname.
+  // The seat row deliberately stays user_id NULL (a temporary seat): binding
+  // user_id here would break the host's later "remove without history" path.
+  const nickname = result.event.payload.nickname;
+  if (typeof nickname === "string" && nickname) {
+    try {
+      await env.DB.prepare(
+        "UPDATE match_players SET nickname_snapshot = ?1 WHERE id = ?2 AND match_id = ?3",
+      ).bind(nickname, playerId, room.match_id).run();
+    } catch {
+      // The DO is authoritative for the live room; a transient D1 write only
+      // affects the archived nickname and is retried on the next command.
+    }
+  }
+  return commandResponse(result);
+}
+
+async function renameSeat(
+  request: Request,
+  env: RealtimeEnv,
+  roomCode: string,
+  playerId: string,
+  context: RealtimeRequestContext,
+): Promise<Response> {
+  requireSameOrigin(request);
+  const session = await requireSession(env, request);
+  const body = await readJson(request);
+  const requestOperationId = operationId(body.operationId);
+  const version = expectedVersion(body.expectedVersion);
+  const nickname = typeof body.nickname === "string" ? body.nickname.trim().slice(0, 80) : "";
+  if (!nickname) throw new RealtimeValidationError("nickname 无效");
+  const room = await env.DB.prepare(
+    "SELECT rr.match_id, m.owner_user_id FROM realtime_rooms rr JOIN matches m ON m.id = rr.match_id WHERE rr.room_code = ?1",
+  ).bind(roomCode).first<{ match_id: string; owner_user_id: string }>();
+  if (!room) return json({ error: "房间不存在" }, 404);
+  if (room.owner_user_id !== session.user.id) return json({ error: "只有房主可以修改临时席位名称" }, 403);
+
+  const result = await env.MATCH_ROOM.getByName(room.match_id).renameSeat({
+    operationId: requestOperationId,
+    expectedVersion: version,
+    actorUserId: session.user.id,
+    playerId,
+    nickname,
+  });
+  if (!result.ok) return commandResponse(result);
+  const eventNickname = result.event.payload.nickname;
+  if (typeof eventNickname === "string" && eventNickname && !(await convergePlayerName(env, room.match_id, playerId, eventNickname))) {
+    return json({
+      error: "席位已改名，云端归档状态正在同步；请重试",
+      requestId: context.requestId,
+      retryable: true,
+      operationId: requestOperationId,
+      room: { code: roomCode, matchId: room.match_id },
+    }, 503);
+  }
+  return commandResponse(result);
+}
+
 async function listMyRooms(request: Request, env: RealtimeEnv): Promise<Response> {
   const session = await requireSession(env, request);
   // Match-level membership projection: the current user is host or player of an
@@ -938,6 +1067,14 @@ export async function handleRealtimeApiRequest(request: Request, env: RealtimeEn
     const playerRemove = pathname.match(/^\/api\/realtime\/rooms\/([23456789A-HJ-NP-Z]{6})\/players\/([0-9a-f-]{36})$/i);
     if (!response && playerRemove && request.method === "POST") {
       response = await removePlayer(request, env, playerRemove[1].toUpperCase(), uuid(playerRemove[2], "playerId"), context);
+    }
+    const claim = pathname.match(/^\/api\/realtime\/rooms\/([23456789A-HJ-NP-Z]{6})\/players\/([0-9a-f-]{36})\/claim$/i);
+    if (!response && claim && request.method === "POST") {
+      response = await claimSeat(request, env, claim[1].toUpperCase(), uuid(claim[2], "playerId"));
+    }
+    const rename = pathname.match(/^\/api\/realtime\/rooms\/([23456789A-HJ-NP-Z]{6})\/players\/([0-9a-f-]{36})\/name$/i);
+    if (!response && rename && request.method === "PATCH") {
+      response = await renameSeat(request, env, rename[1].toUpperCase(), uuid(rename[2], "playerId"), context);
     }
     const leave = pathname.match(/^\/api\/realtime\/rooms\/([23456789A-HJ-NP-Z]{6})\/leave$/i);
     if (!response && leave && request.method === "POST") response = await leaveRoom(request, env, leave[1].toUpperCase());

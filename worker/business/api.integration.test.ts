@@ -16,6 +16,7 @@ declare global {
 }
 
 type Account = { id: string; cookie: string };
+let registrationSequence = 0;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, __D1_MIGRATIONS__);
@@ -49,10 +50,12 @@ function cookieValue(response: Response): string {
 }
 
 async function register(username: string): Promise<Account> {
+  registrationSequence += 1;
+  const compactUsername = `u${registrationSequence.toString(36).padStart(7, "0")}`;
   const response = await SELF.fetch("http://example.com/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: "http://example.com" },
-    body: JSON.stringify({ username, password: "secret1", inviteCode: "replace-with-test-invite-code" }),
+    body: JSON.stringify({ username: compactUsername, nickname: username, password: "secret1", inviteCode: "replace-with-test-invite-code" }),
   });
   expect(response.status).toBe(201);
   const payload = await response.clone().json() as { user: { id: string } };

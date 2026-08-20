@@ -5,6 +5,7 @@ import {
   generateSessionToken,
   normalizeUsername,
   SESSION_COOKIE_NAME,
+  validateRegistrationUsername,
   validateNickname,
   validatePassword,
   verifySecret,
@@ -173,7 +174,7 @@ function trimSessionsStatement(env: AuthEnv, userId: string): D1PreparedStatemen
 async function register(request: Request, env: AuthEnv, requestId: string): Promise<Response> {
   requireSameOrigin(request);
   const body = await readJson(request);
-  const { normalized, display } = normalizeUsername(body.username);
+  const { normalized, display } = validateRegistrationUsername(body.username);
   const password = validatePassword(body.password);
   const nickname = validateNickname(body.nickname, display);
   const inviteCode = typeof body.inviteCode === "string" ? body.inviteCode : "";

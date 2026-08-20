@@ -13,11 +13,22 @@ import {
 export type RoomRole = "host" | "player" | "spectator";
 export type RoomPayload = JsonObject;
 
+/**
+ * 房间内参与者统一模型（ROADMAP P1/P2，见 2.1）：
+ * - `nickname` 即显示名（displayName）：P1 下注册用户始终携带注册昵称快照，
+ *   中途改昵称不影响本局已加入的显示。
+ * - `playerType`：P1 阶段所有成员均为 `registered`；P2 游客加入时扩展 `guest`。
+ * - 座位号（seat_no / seatIndex）仅用于布局，不再作为名称展示。
+ */
+export type PlayerType = "registered" | "guest";
+
 export type RoomMember = {
   userId: string;
   nickname: string;
   role: RoomRole;
   joinedAt: number;
+  /** P1 阶段恒为 "registered"；P2 游客加入时扩展 "guest"。 */
+  playerType?: PlayerType;
 };
 
 export type RoomEvent = {
@@ -200,6 +211,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     this.updateSocketRole(input.targetUserId, input.role);
     const result = this.appendEvent(meta.version, input.operationId, input.actorUserId, "member.role_changed", {
       userId: input.targetUserId,
+      nickname: target.nickname,
       role: input.role,
     });
     if (result.ok) this.broadcast({ type: "event", event: result.event, version: result.version });
@@ -229,6 +241,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     this.ctx.storage.sql.exec("DELETE FROM room_members WHERE user_id = ?", input.actorUserId);
     const result = this.appendEvent(meta.version, input.operationId, input.actorUserId, "member.left", {
       userId: input.actorUserId,
+      nickname: member.nickname,
     });
     if (result.ok) this.broadcast({ type: "event", event: result.event, version: result.version });
     return result;
@@ -268,6 +281,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     this.ctx.storage.sql.exec("DELETE FROM room_members WHERE user_id = ?", input.targetUserId);
     const result = this.appendEvent(meta.version, input.operationId, input.actorUserId, "member.kicked", {
       userId: input.targetUserId,
+      nickname: target.nickname,
       kickedByUserId: input.actorUserId,
     });
     if (result.ok) {
@@ -337,6 +351,132 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
         playerId: input.playerId,
       });
     });
+  }
+
+  /**
+   * P1：把注册成员绑定到局内席位，席位显示名改为该成员加入时的注册昵称快照
+   * （displayName，中途改昵称不影响本局）。席位 ID 与计分流水保持不变，座位号
+   * 仍只用于布局。仅房主可执行；目标成员必须为 host / player（观战者不可绑定）。
+   */
+  async claimSeat(input: {
+    operationId: string;
+    expectedVersion: number;
+    actorUserId: string;
+    playerId: string;
+    targetUserId: string;
+  }): Promise<RoomCommandResult> {
+    const meta = this.meta();
+    if (!meta) return { ok: false, code: "not_initialized", currentVersion: 0 };
+    const duplicate = this.eventByOperation(input.operationId);
+    if (duplicate) return { ok: true, duplicate: true, event: duplicate, version: meta.version };
+    if (meta.status === "completed") return { ok: false, code: "invalid_command", currentVersion: meta.version };
+    if (input.expectedVersion !== meta.version) {
+      return { ok: false, code: "version_conflict", currentVersion: meta.version };
+    }
+    if (!input.operationId || input.operationId.length > 128) {
+      return { ok: false, code: "invalid_command", currentVersion: meta.version };
+    }
+    const actor = this.member(input.actorUserId);
+    if (!actor || actor.role !== "host") return { ok: false, code: "forbidden", currentVersion: meta.version };
+    const target = this.member(input.targetUserId);
+    if (!target || target.role === "spectator") return { ok: false, code: "not_found", currentVersion: meta.version };
+    const displayName = target.nickname.trim().slice(0, 80) || `玩家${target.userId.slice(-4)}`;
+
+    const chaseScore = this.chaseScoreState();
+    if (chaseScore) {
+      const seat = chaseScore.players.find((player) => player.id === input.playerId && player.active);
+      if (!seat) return { ok: false, code: "not_found", currentVersion: meta.version };
+      const players = chaseScore.players.map((player) =>
+        player.id === seat.id ? { ...player, nickname: displayName, userId: target.userId } : player);
+      const result = this.ctx.storage.transactionSync(() => {
+        this.persistChaseScoreState({ ...chaseScore, players });
+        return this.appendEvent(meta.version, input.operationId, input.actorUserId, "player.claimed", {
+          playerId: seat.id,
+          userId: target.userId,
+          nickname: displayName,
+        });
+      });
+      if (result.ok) this.broadcast({ type: "event", event: result.event, version: result.version });
+      return result;
+    }
+
+    const eightBall = this.eightBallState();
+    if (eightBall) {
+      const seat = eightBall.players.find((player) => player.id === input.playerId);
+      if (!seat) return { ok: false, code: "not_found", currentVersion: meta.version };
+      const players = eightBall.players.map((player) =>
+        player.id === seat.id ? { ...player, nickname: displayName, userId: target.userId } : player) as RealtimeEightBallState["players"];
+      const result = this.ctx.storage.transactionSync(() => {
+        this.persistEightBallState({ ...eightBall, players });
+        return this.appendEvent(meta.version, input.operationId, input.actorUserId, "player.claimed", {
+          playerId: seat.id,
+          userId: target.userId,
+          nickname: displayName,
+        });
+      });
+      if (result.ok) this.broadcast({ type: "event", event: result.event, version: result.version });
+      return result;
+    }
+
+    return { ok: false, code: "invalid_command", currentVersion: meta.version };
+  }
+
+  async renameSeat(input: {
+    operationId: string;
+    expectedVersion: number;
+    actorUserId: string;
+    playerId: string;
+    nickname: string;
+  }): Promise<RoomCommandResult> {
+    const meta = this.meta();
+    if (!meta) return { ok: false, code: "not_initialized", currentVersion: 0 };
+    const duplicate = this.eventByOperation(input.operationId);
+    if (duplicate) return { ok: true, duplicate: true, event: duplicate, version: meta.version };
+    if (meta.status === "completed") return { ok: false, code: "invalid_command", currentVersion: meta.version };
+    if (input.expectedVersion !== meta.version) return { ok: false, code: "version_conflict", currentVersion: meta.version };
+    if (!input.operationId || input.operationId.length > 128) return { ok: false, code: "invalid_command", currentVersion: meta.version };
+    const actor = this.member(input.actorUserId);
+    if (!actor || actor.role !== "host") return { ok: false, code: "forbidden", currentVersion: meta.version };
+    const nickname = input.nickname.trim().slice(0, 80);
+    if (!nickname) return { ok: false, code: "invalid_command", currentVersion: meta.version };
+
+    const chaseScore = this.chaseScoreState();
+    if (chaseScore) {
+      const seat = chaseScore.players.find((player) => player.id === input.playerId && player.active);
+      if (!seat) return { ok: false, code: "not_found", currentVersion: meta.version };
+      if (seat.userId) return { ok: false, code: "forbidden", currentVersion: meta.version };
+      const players = chaseScore.players.map((player) => player.id === seat.id ? { ...player, nickname } : player);
+      const result = this.ctx.storage.transactionSync(() => {
+        this.persistChaseScoreState({ ...chaseScore, players });
+        return this.appendEvent(meta.version, input.operationId, input.actorUserId, "player.renamed", {
+          playerId: seat.id,
+          nickname,
+          previousNickname: seat.nickname,
+        });
+      });
+      if (result.ok) this.broadcast({ type: "event", event: result.event, version: result.version });
+      return result;
+    }
+
+    const eightBall = this.eightBallState();
+    if (eightBall) {
+      const seat = eightBall.players.find((player) => player.id === input.playerId);
+      if (!seat) return { ok: false, code: "not_found", currentVersion: meta.version };
+      if (seat.userId) return { ok: false, code: "forbidden", currentVersion: meta.version };
+      const players = eightBall.players.map((player) => player.id === seat.id ? { ...player, nickname } : player) as RealtimeEightBallState["players"];
+      const result = this.ctx.storage.transactionSync(() => {
+        this.persistEightBallState({ ...eightBall, players });
+        return this.appendEvent(meta.version, input.operationId, input.actorUserId, "player.renamed", {
+          playerId: seat.id,
+          nickname,
+          previousNickname: seat.nickname,
+        });
+      });
+      if (result.ok) this.broadcast({ type: "event", event: result.event, version: result.version });
+      return result;
+    }
+
+    return { ok: false, code: "invalid_command", currentVersion: meta.version };
   }
 
   async submitCommand(input: {
@@ -554,11 +694,18 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
     return row ? this.toEvent(row) : undefined;
   }
 
-  private member(userId: string): { role: RoomRole } | undefined {
-    return this.ctx.storage.sql.exec<{ role: RoomRole }>(
-      "SELECT role FROM room_members WHERE user_id = ?",
+  private member(userId: string): { userId: string; nickname: string; role: RoomRole; joinedAt: number } | undefined {
+    const row = this.ctx.storage.sql.exec<{
+      user_id: string;
+      nickname: string;
+      role: RoomRole;
+      joined_at: number;
+    }>(
+      "SELECT user_id, nickname, role, joined_at FROM room_members WHERE user_id = ?",
       userId,
     ).toArray()[0];
+    if (!row) return undefined;
+    return { userId: row.user_id, nickname: row.nickname, role: row.role, joinedAt: row.joined_at };
   }
 
   private lastMemberDeparture(userId: string): RoomEvent | undefined {
@@ -670,6 +817,7 @@ export class MatchRoom extends DurableObject<MatchRoomEnv> {
         nickname: member.nickname,
         role: member.role,
         joinedAt: member.joined_at,
+        playerType: "registered",
       })),
       events: events.map((event) => this.toEvent(event)),
       chaseScore: this.chaseScoreState() ?? null,

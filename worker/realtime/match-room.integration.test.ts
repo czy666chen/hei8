@@ -38,11 +38,15 @@ function cookieValue(response: Response): string {
   return (response.headers.get("Set-Cookie") ?? "").split(";", 1)[0];
 }
 
+let registrationSequence = 0;
+
 async function register(username = "room_host"): Promise<{ cookie: string; userId: string }> {
+  registrationSequence += 1;
+  const compactUsername = `r${registrationSequence.toString(36).padStart(7, "0")}`;
   const response = await SELF.fetch("http://example.com/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: "http://example.com" },
-    body: JSON.stringify({ username, password: "secret1", inviteCode: "replace-with-test-invite-code" }),
+    body: JSON.stringify({ username: compactUsername, nickname: username, password: "secret1", inviteCode: "replace-with-test-invite-code" }),
   });
   expect(response.status).toBe(201);
   const payload = await response.clone().json() as { user: { id: string } };
@@ -1088,6 +1092,256 @@ describe("R4 MatchRoom Durable Object", () => {
     expect(hostLeave.status).toBe(403);
   });
 
+  it("P1: lets the host bind a promoted member to a seat so the scoreboard shows the registered nickname", async () => {
+    const host = await register("claim_host");
+    const guest = await register("claim_guest");
+    const matchId = crypto.randomUUID();
+    const seatA = crypto.randomUUID();
+    const seatB = crypto.randomUUID();
+    const scoreSnapshot = JSON.stringify({
+      mode: "score",
+      players: [
+        { id: "local-a", name: "玩家 A", initialScore: 100, score: 100, active: true },
+        { id: "local-b", name: "玩家 B", initialScore: 100, score: 100, active: true },
+      ],
+      rules: [{ id: "win", label: "普胜", value: 4, kind: "gain", enabled: true }],
+      currentPlayerId: "local-a",
+      turnStrategy: "fixed",
+    });
+    await env.DB.prepare(
+      "INSERT INTO matches (id, owner_user_id, mode, status, privacy, snapshot_json) VALUES (?1, ?2, 'score', 'draft', 'private', ?3)",
+    ).bind(matchId, host.userId, scoreSnapshot).run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot) VALUES (?1, ?2, 0, 'player', '玩家 A')",
+      ).bind(seatA, matchId),
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot) VALUES (?1, ?2, 1, 'player', '玩家 B')",
+      ).bind(seatB, matchId),
+    ]);
+    const created = await SELF.fetch("http://example.com/api/realtime/rooms", {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ matchId }),
+    });
+    const roomCode = ((await created.json()) as { room: { code: string } }).room.code;
+
+    // Guest joins as spectator, then the host promotes them to player.
+    await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/join`, {
+      method: "POST",
+      headers: { Cookie: guest.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-join-1" }),
+    });
+    const promoted = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/members/${guest.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-promote-1", expectedVersion: 1, role: "player" }),
+    });
+    expect(promoted.status).toBe(200);
+
+    // Before claiming, the guest's seat still shows the draft placeholder name.
+    const before = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}`, { headers: { Cookie: host.cookie } });
+    const beforePayload = await before.json() as { snapshot: { version: number; chaseScore: { players: Array<{ nickname: string }> } } };
+    expect(beforePayload.snapshot.chaseScore.players.map((player) => player.nickname)).toEqual(["玩家 A", "玩家 B"]);
+
+    // Host claims seat A for the guest: the seat now displays the guest's registered nickname.
+    const claimed = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatA}/claim`, {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-seat-1", expectedVersion: beforePayload.snapshot.version, userId: guest.userId }),
+    });
+    expect(claimed.status).toBe(200);
+    const claimedPayload = await claimed.json() as {
+      ok: boolean;
+      duplicate: boolean;
+      version: number;
+      event: { kind: string; payload: { playerId: string; userId: string; nickname: string } };
+    };
+    expect(claimedPayload).toMatchObject({ ok: true, duplicate: false, event: { kind: "player.claimed" } });
+    expect(claimedPayload.event.payload).toMatchObject({ playerId: seatA, userId: guest.userId });
+    expect(claimedPayload.event.payload.nickname).not.toBe("玩家 A");
+    expect(claimedPayload.event.payload.nickname.length).toBeGreaterThan(0);
+
+    const after = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}`, { headers: { Cookie: host.cookie } });
+    const afterPayload = await after.json() as { snapshot: { version: number; chaseScore: { players: Array<{ nickname: string; userId?: string }> } } };
+    expect(afterPayload.snapshot.chaseScore.players[0]).toMatchObject({
+      nickname: claimedPayload.event.payload.nickname,
+      userId: guest.userId,
+    });
+
+    // D1 seat projection keeps the claimed nickname snapshot.
+    await expect(env.DB.prepare(
+      "SELECT nickname_snapshot FROM match_players WHERE id = ?1",
+    ).bind(seatA).first<string>("nickname_snapshot")).resolves.toBe(claimedPayload.event.payload.nickname);
+
+    // A non-host member cannot claim seats.
+    const forbidden = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/claim`, {
+      method: "POST",
+      headers: { Cookie: guest.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-forbidden", expectedVersion: afterPayload.snapshot.version, userId: guest.userId }),
+    });
+    expect(forbidden.status).toBe(403);
+
+    // Repeating the same claim operation is an idempotent duplicate.
+    const repeated = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatA}/claim`, {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim-seat-1", expectedVersion: afterPayload.snapshot.version, userId: guest.userId }),
+    });
+    expect(repeated.status).toBe(200);
+    await expect(repeated.json()).resolves.toMatchObject({ ok: true, duplicate: true });
+  });
+
+  it("P1: claims a Chinese-eight seat with the registered nickname", async () => {
+    const host = await register("claim8_host");
+    const guest = await register("claim8_guest");
+    const matchId = crypto.randomUUID();
+    const redSeat = crypto.randomUUID();
+    const blueSeat = crypto.randomUUID();
+    const snapshotJson = JSON.stringify({
+      schemaVersion: 1,
+      mode: "chinese_eight",
+      players: [{ id: "local-red", name: "红方" }, { id: "local-blue", name: "蓝方" }],
+      raceTo: null,
+      firstServerId: "local-red",
+      serveRule: "alternate",
+      startedAt: Date.now(),
+      events: [],
+    });
+    await env.DB.prepare(
+      "INSERT INTO matches (id, owner_user_id, mode, status, privacy, snapshot_json) VALUES (?1, ?2, 'chinese_eight', 'draft', 'private', ?3)",
+    ).bind(matchId, host.userId, snapshotJson).run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot) VALUES (?1, ?2, 0, 'player', '红方')",
+      ).bind(redSeat, matchId),
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot) VALUES (?1, ?2, 1, 'player', '蓝方')",
+      ).bind(blueSeat, matchId),
+    ]);
+    const created = await SELF.fetch("http://example.com/api/realtime/rooms", {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ matchId }),
+    });
+    const roomCode = ((await created.json()) as { room: { code: string } }).room.code;
+    await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/join`, {
+      method: "POST",
+      headers: { Cookie: guest.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim8-join-1" }),
+    });
+    await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/members/${guest.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim8-promote-1", expectedVersion: 1, role: "player" }),
+    });
+
+    const claimed = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${blueSeat}/claim`, {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "claim8-seat-1", expectedVersion: 2, userId: guest.userId }),
+    });
+    expect(claimed.status).toBe(200);
+    const claimedPayload = await claimed.json() as {
+      event: { payload: { playerId: string; nickname: string } };
+    };
+    expect(claimedPayload.event.payload).toMatchObject({ playerId: blueSeat });
+    expect(claimedPayload.event.payload.nickname).not.toBe("蓝方");
+
+    const after = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}`, { headers: { Cookie: host.cookie } });
+    const afterPayload = await after.json() as { snapshot: { eightBall: { players: Array<{ nickname: string; userId?: string }> } } };
+    expect(afterPayload.snapshot.eightBall.players[1]).toMatchObject({
+      nickname: claimedPayload.event.payload.nickname,
+      userId: guest.userId,
+    });
+  });
+
+  it("renames only unclaimed temporary seats and converges the archived baseline", async () => {
+    const host = await register("rename_host");
+    const guest = await register("rename_guest");
+    const matchId = crypto.randomUUID();
+    const seatA = crypto.randomUUID();
+    const seatB = crypto.randomUUID();
+    const scoreSnapshot = JSON.stringify({
+      mode: "score",
+      players: [
+        { id: seatA, name: "甲", initialScore: 100, score: 100, active: true },
+        { id: seatB, name: "乙", initialScore: 100, score: 100, active: true },
+      ],
+      rules: [{ id: "win", label: "普胜", value: 4, kind: "gain", enabled: true }],
+      currentPlayerId: seatA,
+      turnStrategy: "fixed",
+    });
+    await env.DB.prepare(
+      "INSERT INTO matches (id, owner_user_id, mode, status, privacy, snapshot_json) VALUES (?1, ?2, 'score', 'draft', 'private', ?3)",
+    ).bind(matchId, host.userId, scoreSnapshot).run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot) VALUES (?1, ?2, 0, 'player', '甲')",
+      ).bind(seatA, matchId),
+      env.DB.prepare(
+        "INSERT INTO match_players (id, match_id, seat_no, role, nickname_snapshot) VALUES (?1, ?2, 1, 'player', '乙')",
+      ).bind(seatB, matchId),
+    ]);
+    const created = await SELF.fetch("http://example.com/api/realtime/rooms", {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ matchId }),
+    });
+    const roomCode = ((await created.json()) as { room: { code: string } }).room.code;
+
+    const renamed = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/name`, {
+      method: "PATCH",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "rename-seat-1", expectedVersion: 0, nickname: "老周" }),
+    });
+    expect(renamed.status).toBe(200);
+    await expect(renamed.json()).resolves.toMatchObject({
+      ok: true,
+      duplicate: false,
+      event: { kind: "player.renamed", payload: { playerId: seatB, nickname: "老周", previousNickname: "乙" } },
+    });
+    const after = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}`, { headers: { Cookie: host.cookie } });
+    const afterPayload = await after.json() as { snapshot: { version: number; chaseScore: { players: Array<{ nickname: string }> } } };
+    expect(afterPayload.snapshot.chaseScore.players[1].nickname).toBe("老周");
+    await expect(env.DB.prepare(
+      "SELECT nickname_snapshot FROM match_players WHERE id = ?1",
+    ).bind(seatB).first<string>("nickname_snapshot")).resolves.toBe("老周");
+    const baseline = await env.DB.prepare(
+      "SELECT snapshot_json FROM matches WHERE id = ?1",
+    ).bind(matchId).first<string>("snapshot_json");
+    expect((JSON.parse(baseline!) as { players: Array<{ name: string }> }).players[1].name).toBe("老周");
+
+    const forbidden = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatA}/name`, {
+      method: "PATCH",
+      headers: { Cookie: guest.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "rename-forbidden", expectedVersion: afterPayload.snapshot.version, nickname: "坏名" }),
+    });
+    expect(forbidden.status).toBe(403);
+
+    await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/join`, {
+      method: "POST",
+      headers: { Cookie: guest.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "rename-join-1" }),
+    });
+    await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/members/${guest.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "rename-promote-1", expectedVersion: 2, role: "player" }),
+    });
+    await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/claim`, {
+      method: "POST",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "rename-claim-1", expectedVersion: 3, userId: guest.userId }),
+    });
+    const bound = await SELF.fetch(`http://example.com/api/realtime/rooms/${roomCode}/players/${seatB}/name`, {
+      method: "PATCH",
+      headers: { Cookie: host.cookie, Origin: "http://example.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: "rename-bound", expectedVersion: 4, nickname: "不应生效" }),
+    });
+    expect(bound.status).toBe(403);
+  });
+
   it("lets only the host complete a room and atomically archives its final projection to D1", async () => {
     const host = await register("archive_host");
     const guest = await register("archive_guest");
@@ -1252,7 +1506,7 @@ describe("R4 MatchRoom Durable Object", () => {
     expect(body.room.code).toMatch(/^[23456789A-HJ-NP-Z]{6}$/);
     expect(body.host).toMatchObject({ userId: host.userId, role: "host" });
     expect(body.snapshot).toMatchObject({ matchId: body.matchId, roomCode: body.room.code, version: 0 });
-    expect(body.snapshot.members).toEqual([{ userId: host.userId, nickname: "direct_host", role: "host", joinedAt: expect.any(Number) }]);
+    expect(body.snapshot.members).toEqual([{ userId: host.userId, nickname: "甲", role: "host", joinedAt: expect.any(Number), playerType: "registered" }]);
     expect(body.snapshot.chaseScore).toMatchObject({
       mode: "score",
       players: [
@@ -1289,7 +1543,7 @@ describe("R4 MatchRoom Durable Object", () => {
       { seat_no: 0, role: "player", user_id: null, nickname_snapshot: "甲" },
       { seat_no: 1, role: "player", user_id: null, nickname_snapshot: "乙" },
       { seat_no: 2, role: "player", user_id: null, nickname_snapshot: "丙" },
-      { seat_no: 3, role: "host", user_id: host.userId, nickname_snapshot: "direct_host" },
+      { seat_no: 3, role: "host", user_id: host.userId, nickname_snapshot: "甲" },
     ]);
   });
 
