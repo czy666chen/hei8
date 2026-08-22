@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,6 +17,11 @@ export const metadata: Metadata = {
     description: "多人追分 · 51 张奇招牌 · 完整对局流水",
     images: ["/og.png"],
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#07100d",
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

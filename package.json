@@ -5,12 +5,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/czy666chen/hei8.git"
+    "url": "git+https://github.com/czy666chen/taiqiu-qizhao.git"
   },
   "bugs": {
-    "url": "https://github.com/czy666chen/hei8/issues"
+    "url": "https://github.com/czy666chen/taiqiu-qizhao/issues"
   },
-  "homepage": "https://github.com/czy666chen/hei8#readme",
+  "homepage": "https://github.com/czy666chen/taiqiu-qizhao#readme",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

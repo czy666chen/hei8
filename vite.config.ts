@@ -1,26 +1,13 @@
 import vinext from "vinext";
+import { rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
-import { sites } from "./build/sites-vite-plugin";
-
-const { r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
-  // D1 is sourced from wrangler.jsonc so the generated Worker never receives
-  // duplicate DB bindings. `.openai/hosting.json` still declares the binding
-  // name for the hosting control plane.
-  r2_buckets: r2
-    ? [
-        {
-          binding: r2,
-          bucket_name: "site-creator-r2",
-        },
-      ]
-    : [],
 };
 
 export default defineConfig(async () => {
@@ -51,11 +38,17 @@ export default defineConfig(async () => {
     },
     plugins: [
       vinext(),
-      sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         config: localBindingConfig,
       }),
+      {
+        name: "remove-build-secrets",
+        apply: "build",
+        async closeBundle() {
+          await rm(resolve(process.cwd(), "dist", "server", ".dev.vars"), { force: true });
+        },
+      },
     ],
   };
 });

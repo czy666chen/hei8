@@ -49,3 +49,10 @@ next-env.d.ts
 /outputs/
 /work/
 /backups/
+/.agents/
+/.dsh/
+/docs/
+/taiqiuqizhao/
+/*ROADMAP*.md
+/*PLAN*.md
+wrangler.jsonc.bak-*

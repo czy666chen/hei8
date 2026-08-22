@@ -50,10 +50,10 @@ export interface StorageAdapter {
 export class BrowserStorageAdapter implements StorageAdapter {
   constructor(private readonly storage: Storage) {}
 
-  get(key: string) { return this.storage.getItem(key); }
-  set(key: string, value: string) { this.storage.setItem(key, value); }
-  remove(key: string) { this.storage.removeItem(key); }
-  keys() { return Array.from({ length: this.storage.length }, (_, index) => this.storage.key(index)).filter((key): key is string => key !== null); }
+  get(key: string) { try { return this.storage.getItem(key); } catch { return null; } }
+  set(key: string, value: string) { try { this.storage.setItem(key, value); } catch {} }
+  remove(key: string) { try { this.storage.removeItem(key); } catch {} }
+  keys() { try { return Array.from({ length: this.storage.length }, (_, index) => this.storage.key(index)).filter((key): key is string => key !== null); } catch { return []; } }
 }
 
 export class MemoryStorageAdapter implements StorageAdapter {

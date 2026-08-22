@@ -70,6 +70,7 @@ import {
   EMPTY_APP_DATA as EMPTY_DATA,
   loadAppData,
   loadDeletedMatchIds,
+  MemoryStorageAdapter,
   ScorePreset,
   StorageIssue,
   SYNC_DEVICE_KEY,
@@ -122,8 +123,14 @@ async function apiPayload<T>(response: Response): Promise<T> {
 }
 
 function browserStore() {
-  return new VersionedLocalStore(new BrowserStorageAdapter(window.localStorage));
+  try {
+    return new VersionedLocalStore(new BrowserStorageAdapter(window.localStorage));
+  } catch {
+    return new VersionedLocalStore(fallbackStorage);
+  }
 }
+
+const fallbackStorage = new MemoryStorageAdapter();
 
 // A directly-created cloud room has no local match row, so its history entry
 // (id === server matchId) needs a cloud link to reach the server tombstone
@@ -262,9 +269,13 @@ function EmptyHome({ onStart, onStartEight, onNavigate, onResume, recent, paused
 }
 
 function ScoreValueInput({ rule, onValueChange }: { rule: ScoreRule; onValueChange: (value: number) => void }) {
-  const [draftValue, setDraftValue] = useState(String(rule.value));
+  return <NonNegativeNumberInput ariaLabel={`${rule.label}分值`} value={rule.value} onValueChange={onValueChange} />;
+}
 
-  return <input aria-label={`${rule.label}分值`} type="number" min="0" inputMode="numeric" value={draftValue} onChange={(event) => {
+function NonNegativeNumberInput({ ariaLabel, value, max, onValueChange }: { ariaLabel: string; value: number; max?: number; onValueChange: (value: number) => void }) {
+  const [draftValue, setDraftValue] = useState(String(value));
+
+  return <input aria-label={ariaLabel} type="number" min="0" max={max} inputMode="numeric" value={draftValue} onChange={(event) => {
     const next = event.target.value;
     setDraftValue(next);
     if (next !== "" && Number.isFinite(Number(next))) onValueChange(Number(next));
@@ -464,7 +475,7 @@ function SetupDialog({ initialMode, savedRules, scorePresets, onClose, onStart, 
                 <button className={cardMode === "none" ? "active" : ""} onClick={() => setCardMode("none")}>不抽牌</button>
                 <button className={cardMode === "independent" ? "active" : ""} onClick={() => setCardMode("independent")}>独立手牌</button>
               </div>
-              {cardMode !== "none" && <><div className="deck-picker" aria-label="选择官方牌组">{OFFICIAL_DECKS.map((deck) => <button key={deck.id} className={deckId === deck.id ? "active" : ""} onClick={() => setDeckId(deck.id)}><b>{deck.name}</b><small>{officialDeckCardCount(deck)} 张 · {deck.difficulty}</small><span>{deck.description}</span></button>)}</div><label className="initial-score"><span>每人起始手牌</span><input type="number" min="0" max="10" inputMode="numeric" value={handSize} onChange={(event) => setHandSize(Number(event.target.value))} /><small>{selectedDeck.name} · {selectedDeckCount} 张实体牌</small></label></>}
+              {cardMode !== "none" && <><div className="deck-picker" aria-label="选择官方牌组">{OFFICIAL_DECKS.map((deck) => <button key={deck.id} className={deckId === deck.id ? "active" : ""} onClick={() => setDeckId(deck.id)}><b>{deck.name}</b><small>{officialDeckCardCount(deck)} 张 · {deck.difficulty}</small><span>{deck.description}</span></button>)}</div><label className="initial-score"><span>每人起始手牌</span><NonNegativeNumberInput ariaLabel="追分每人起始手牌" value={handSize} max={10} onValueChange={setHandSize} /><small>{selectedDeck.name} · {selectedDeckCount} 张实体牌</small></label></>}
               {cardMode !== "none" && <div className="advanced-card-settings"><label><span>自动补牌</span><select aria-label="自动补牌策略" value={cardAutoDrawPolicy} onChange={(event) => setCardAutoDrawPolicy(event.target.value as AutoDrawPolicy)}><option value="manual">仅手动抽牌</option><option value="game">每小局补满</option><option value="round">每轮补满</option><option value="after_play">用牌后补一张</option></select></label><label><span>手牌上限</span><input aria-label="手牌上限" type="number" min={handSize} max="20" value={cardHandLimit} onChange={(event) => setCardHandLimit(Number(event.target.value))} /></label><label><span>牌库耗尽</span><select aria-label="牌库耗尽策略" value={cardExhaustionPolicy} onChange={(event) => setCardExhaustionPolicy(event.target.value as DeckExhaustionPolicy)}><option value="stop">停止抽牌</option><option value="reshuffle">确认后重洗弃牌</option></select></label><label><span>最高安全等级</span><select aria-label="卡牌最高安全等级" value={maxSafetyLevel} onChange={(event) => setMaxSafetyLevel(event.target.value as "low" | "medium" | "review")}><option value="review">包含待复核</option><option value="medium">排除待复核</option><option value="low">仅低风险</option></select></label><fieldset><legend>排除类别</legend>{([['strategy','竞技策略'],['social','社交惩罚'],['physical','身体动作'],['chaos','趣味混沌']] as const).map(([id, label]) => <label key={id}><input type="checkbox" checked={excludedCategories.includes(id)} onChange={(event) => setExcludedCategories(event.target.checked ? [...excludedCategories, id] : excludedCategories.filter((item) => item !== id))} />{label}</label>)}</fieldset><label className="filter-keywords"><span>排除关键词</span><input aria-label="排除卡牌关键词" placeholder="用逗号分隔，例如：红包，朋友圈" value={excludedKeywords} onChange={(event) => setExcludedKeywords(event.target.value)} /></label></div>}
             </section>
           </div>
@@ -749,7 +760,7 @@ function EightBallSetupDialog({ defaultLayout, onClose, onStart, user, onCloudRo
               <button className={cardMode === "none" ? "active" : ""} onClick={() => setCardMode("none")}>不抽牌</button>
               <button className={cardMode === "independent" ? "active" : ""} onClick={() => setCardMode("independent")}>独立手牌</button>
             </div>
-            {cardMode !== "none" && <><div className="deck-picker" aria-label="选择官方牌组">{OFFICIAL_DECKS.map((deck) => <button key={deck.id} className={deckId === deck.id ? "active" : ""} onClick={() => setDeckId(deck.id)}><b>{deck.name}</b><small>{officialDeckCardCount(deck)} 张 · {deck.difficulty}</small><span>{deck.description}</span></button>)}</div><div className="eight-form-grid">{names.map((name, index) => <label key={index}><span>{name || `玩家 ${index + 1}`} 起始手牌</span><input type="number" min="0" max="10" inputMode="numeric" value={handSizes[index]} onChange={(event) => setHandSizes(handSizes.map((item, itemIndex) => itemIndex === index ? Number(event.target.value) : item) as [number, number])} /></label>)}</div></>}
+            {cardMode !== "none" && <><div className="deck-picker" aria-label="选择官方牌组">{OFFICIAL_DECKS.map((deck) => <button key={deck.id} className={deckId === deck.id ? "active" : ""} onClick={() => setDeckId(deck.id)}><b>{deck.name}</b><small>{officialDeckCardCount(deck)} 张 · {deck.difficulty}</small><span>{deck.description}</span></button>)}</div><div className="eight-form-grid">{names.map((name, index) => <label key={index}><span>{name || `玩家 ${index + 1}`} 起始手牌</span><NonNegativeNumberInput ariaLabel={`中八玩家 ${index + 1} 起始手牌`} value={handSizes[index]} max={10} onValueChange={(value) => setHandSizes(handSizes.map((item, itemIndex) => itemIndex === index ? value : item) as [number, number])} /></label>)}</div></>}
           </section>
         </div>
         <footer className="modal-actions">
@@ -1802,7 +1813,7 @@ export default function GameApp() {
   const [deleteTarget, setDeleteTarget] = useState<{ kind: "eight"; match: EightBallMatch } | { kind: "legacy"; match: BilliardsMatch } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
-  const [theme, setTheme] = useState<ThemeMode>(() => typeof window !== "undefined" && window.localStorage.getItem(APP_THEME_KEY) === "day" ? "day" : "night");
+  const [theme, setTheme] = useState<ThemeMode>(() => typeof window !== "undefined" && browserStore().getRaw(APP_THEME_KEY) === "day" ? "day" : "night");
   const syncRunning = useRef(false);
 
   useEffect(() => {
@@ -1816,7 +1827,7 @@ export default function GameApp() {
       setDeletedMatches(loadDeletedMatchIds(store));
       setPath(window.location.pathname || "/");
       setEightDefaultLayout(store.getRaw(EIGHT_BALL_LAYOUT_KEY) === "split" ? "split" : "stacked");
-      setTheme(window.localStorage.getItem(APP_THEME_KEY) === "day" ? "day" : "night");
+      setTheme(store.getRaw(APP_THEME_KEY) === "day" ? "day" : "night");
       setReady(true);
     });
     return () => {
@@ -1828,7 +1839,14 @@ export default function GameApp() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme === "day" ? "light" : "dark";
-    window.localStorage.setItem(APP_THEME_KEY, theme);
+    let themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (!themeColor) {
+      themeColor = document.createElement("meta");
+      themeColor.name = "theme-color";
+      document.head.appendChild(themeColor);
+    }
+    themeColor.content = theme === "day" ? "#f7fbf7" : "#07100d";
+    browserStore().setRaw(APP_THEME_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
